@@ -116,6 +116,8 @@ def main() -> None:
             if not self.scan: return self._error("Scan a valid addons folder first.")
             self._start(AnalysisService().analyze, Path(self.input_edit.text()), int(self.source_box.currentText()), int(self.target_box.currentText()), callback=self._analysis_done)
         def _analysis_done(self, result):
+            if (str(Path(self.input_edit.text()).resolve()), int(self.source_box.currentText()), int(self.target_box.currentText())) != (str(result.scan.root), result.plan.source, result.plan.target):
+                return
             self.analysis = result
             counts = {level: sum(1 for item in result.findings if item.severity.value == level) for level in ("blocker", "warning", "review_required")}
             blocked = counts["blocker"] > 0
@@ -132,7 +134,11 @@ def main() -> None:
             if self.busy: return self._error("Another operation is still running.")
             self.busy = True; self.progress.show(); self.analyze_btn.setEnabled(False); self.migrate_btn.setEnabled(False)
             self.thread = QThread(self); self.worker = Worker(operation, *args); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.done.connect(callback or (lambda _: None)); self.worker.failed.connect(self._error); self.worker.done.connect(self._finish); self.worker.failed.connect(self._finish); self.thread.finished.connect(self.worker.deleteLater); self.thread.finished.connect(self.thread.deleteLater); self.thread.start()
-        def _finish(self, *_): self.progress.hide(); self.analyze_btn.setEnabled(True); self.migrate_btn.setEnabled(True); self.busy = False; self.thread.quit(); self.thread = None; self.worker = None
+        def _finish(self, *_):
+            self.progress.hide(); self.analyze_btn.setEnabled(True); self.busy = False
+            self.migrate_btn.setEnabled(bool(self.analysis and not self.analysis.blockers))
+            thread = self.thread
+            if thread: thread.quit()
         def _error(self, message): QMessageBox.critical(self, "Odoo Addon Migrator", message); self.status.setText("Operation failed. See the error dialog for details.")
         def _open_output(self): os.startfile(self.output_edit.text())
 

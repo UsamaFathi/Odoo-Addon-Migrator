@@ -22,6 +22,22 @@ class AnalysisResult:
     target_snapshot: SourceSnapshot
     findings: tuple[Finding, ...]
 
+    @property
+    def blockers(self) -> tuple[Finding, ...]:
+        return tuple(item for item in self.findings if item.severity.value == "blocker")
+
+    @property
+    def auto_fixable(self) -> tuple[Finding, ...]:
+        return tuple(item for item in self.findings if item.severity.value == "info")
+
+    @property
+    def warnings(self) -> tuple[Finding, ...]:
+        return tuple(item for item in self.findings if item.severity.value == "warning")
+
+    @property
+    def review_required(self) -> tuple[Finding, ...]:
+        return tuple(item for item in self.findings if item.severity.value == "review_required")
+
 
 class ProjectScanService:
     def scan(self, root: Path) -> ProjectScan:
@@ -43,12 +59,20 @@ class AnalysisService:
             findings.extend(v15_security.analyze(scan.index, target_index))
             findings.extend(v15_frontend.analyze(scan.index))
             findings.extend(v15_reports.analyze(scan.index, target_index))
-        findings = tuple(findings)
+        unique = {}
+        for item in findings:
+            identity = (item.module, item.object_name or item.code, item.path, item.line)
+            current = unique.get(identity)
+            if current is None or (item.rule_id and not current.rule_id):
+                unique[identity] = item
+        findings = tuple(unique.values())
         return AnalysisResult(scan, build_plan(source, target), src, dst, findings)
 
 
 class MigrationService:
     def migrate(self, root: Path, output: Path, analysis: AnalysisResult, dry_run: bool = False) -> MigrationResult:
+        if analysis.blockers:
+            raise ValueError("Migration is blocked until all blocker findings are resolved.")
         return MigrationEngine().migrate(root, output, analysis.plan.source, analysis.plan.target,
                                          dry_run=dry_run,
                                          source_snapshot=analysis.source_snapshot,

@@ -1,0 +1,1 @@
+<odoo><record id="sale_order_view" model="ir.ui.view"><field name="inherit_id" ref="sale.view_order_form"/><field name="arch" type="xml"><xpath expr="//field[@name='x_legacy']" position="after"><field name="x_legacy"/></xpath></field></record></odoo>

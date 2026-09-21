@@ -5,6 +5,11 @@ from odoo_migrator.migrations.v14_to_v15.xml import analyze as xml_analyze
 from odoo_migrator.migrations.v14_to_v15.security import analyze as security_analyze
 from odoo_migrator.sources.diff import compare_indexes
 from odoo_migrator.sources.indexer import ModelInfo, ModuleInfo, OdooIndex, SourceIndexer
+from odoo_migrator.application.services import AnalysisResult, MigrationService
+from odoo_migrator.analysis.compat import Finding, Severity
+from odoo_migrator.core.planner import build_plan
+from odoo_migrator.sources.registry import SourceSnapshot
+import pytest
 
 
 def test_python_pack_flags_removed_method_and_signature():
@@ -20,10 +25,18 @@ def test_python_pack_flags_removed_method_and_signature():
 def test_frontend_legacy_pattern_is_review(tmp_path: Path):
     module = tmp_path / "demo"; (module / "static").mkdir(parents=True)
     (module / "__manifest__.py").write_text("{'name': 'Demo'}", encoding="utf-8")
-    (module / "static" / "x.js").write_text("odoo.define('demo.x', function (require) {});", encoding="utf-8")
+    (module / "static" / "x.js").write_text("odoo.define('demo.x', function (require) { require('web.ajax'); });", encoding="utf-8")
     index = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
     findings = frontend_analyze(index)
     assert findings[0].severity.value == "review_required"
+
+
+def test_generic_module_wrapper_is_not_noisy(tmp_path: Path):
+    module = tmp_path / "demo"; (module / "static").mkdir(parents=True)
+    (module / "__manifest__.py").write_text("{'name': 'Demo'}", encoding="utf-8")
+    (module / "static" / "x.js").write_text("odoo.define('demo.x', function () {});", encoding="utf-8")
+    index = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
+    assert frontend_analyze(index) == []
 
 
 def test_xml_missing_inherited_view_is_review(tmp_path: Path):
@@ -44,3 +57,14 @@ def test_malformed_access_csv_is_blocker(tmp_path: Path):
     custom = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
     finding = security_analyze(custom, OdooIndex("target", {}))[0]
     assert finding.severity.value == "blocker"
+
+
+def test_migration_service_rejects_blocked_analysis(tmp_path: Path):
+    addon = tmp_path / "demo"; addon.mkdir(); (addon / "__manifest__.py").write_text("{'name': 'Demo'}")
+    scan = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
+    from odoo_migrator.analysis.project import ProjectScan
+    result = AnalysisResult(ProjectScan(tmp_path, scan), build_plan(14, 15),
+        SourceSnapshot(14, "14.0", "repo", "a", tmp_path), SourceSnapshot(15, "15.0", "repo", "b", tmp_path),
+        (Finding(Severity.BLOCKER, "x", "demo", "blocked"),))
+    with pytest.raises(ValueError, match="blocked"):
+        MigrationService().migrate(tmp_path, tmp_path / "out", result)

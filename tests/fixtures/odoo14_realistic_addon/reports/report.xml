@@ -1,0 +1,1 @@
+<odoo><template id="demo_report" inherit_id="sale.report_saleorder_document"><t t-call="web.external_layout"/></template></odoo>

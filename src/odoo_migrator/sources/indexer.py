@@ -25,6 +25,17 @@ class ModelInfo:
 
 
 @dataclass(slots=True)
+class ViewInfo:
+    xml_id: str
+    inherit_id: str | None = None
+    xpaths: tuple[str, ...] = ()
+    architecture: str = ""
+
+    def to_json(self) -> dict:
+        return {"xml_id": self.xml_id, "inherit_id": self.inherit_id, "xpaths": list(self.xpaths), "architecture": self.architecture}
+
+
+@dataclass(slots=True)
 class ModuleInfo:
     name: str
     path: str
@@ -35,6 +46,7 @@ class ModuleInfo:
     files: dict[str, int] = field(default_factory=dict)
     controllers: dict[str, list[str]] = field(default_factory=dict)
     assets: set[str] = field(default_factory=set)
+    views: dict[str, ViewInfo] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {
@@ -47,6 +59,7 @@ class ModuleInfo:
             "files": self.files,
             "controllers": self.controllers,
             "assets": sorted(self.assets),
+            "views": {k: v.to_json() for k, v in self.views.items()},
         }
 
 
@@ -141,7 +154,8 @@ class SourceIndexer:
         modules = {}
         for name, raw in data.get("modules", {}).items():
             info = ModuleInfo(name, raw["path"], raw.get("depends", []), {}, set(raw.get("xml_ids", [])),
-                              raw.get("manifest", {}), raw.get("files", {}), raw.get("controllers", {}), set(raw.get("assets", [])))
+                              raw.get("manifest", {}), raw.get("files", {}), raw.get("controllers", {}), set(raw.get("assets", [])),
+                              {key: ViewInfo(value["xml_id"], value.get("inherit_id"), tuple(value.get("xpaths", [])), value.get("architecture", "")) for key, value in raw.get("views", {}).items()})
             for model, model_raw in raw.get("models", {}).items():
                 info.models[model] = ModelInfo(model, set(model_raw.get("methods", [])), set(model_raw.get("fields", [])),
                                                set(model_raw.get("inherits", [])), model_raw.get("signatures", {}))
@@ -223,3 +237,10 @@ class SourceIndexer:
                 xml_id = elem.attrib.get("id")
                 if xml_id:
                     module.xml_ids.add(f"{module.name}.{xml_id}")
+                if elem.tag == "record" and elem.attrib.get("model") == "ir.ui.view" and xml_id:
+                    inherit_id = None; xpaths = []
+                    for field in elem.findall("field"):
+                        if field.attrib.get("name") == "inherit_id": inherit_id = field.attrib.get("ref")
+                        if field.attrib.get("name") == "arch":
+                            xpaths = [node.attrib.get("expr", "") for node in field.iter("xpath") if node.attrib.get("expr")]
+                    module.views[f"{module.name}.{xml_id}"] = ViewInfo(f"{module.name}.{xml_id}", inherit_id, tuple(xpaths), ET.tostring(elem, encoding="unicode"))
