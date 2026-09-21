@@ -90,10 +90,15 @@ def test_removed_dependency_is_a_step_specific_blocker():
     assert finding.target_state == "removed"
 
 
-def _xml_indexes(tmp_path: Path, expression: str, *, target_view=True, target_arch="<form><field name='name'/></form>", attrs=False):
+def _xml_indexes(tmp_path: Path, expression: str, *, target_view=True, target_arch="<form><field name='name'/></form>", attrs=False, states=False):
     addon = tmp_path / "demo"; addon.mkdir(parents=True)
     (addon / "__manifest__.py").write_text("{'name': 'Demo'}")
-    modifier = " attrs=\"{'invisible': [('state', '=', 'done')]}\"" if attrs else ""
+    modifiers = []
+    if attrs:
+        modifiers.append("attrs=\"{'invisible': [('state', '=', 'done')]}\"")
+    if states:
+        modifiers.append('states="draft,confirmed"')
+    modifier = (" " + " ".join(modifiers)) if modifiers else ""
     (addon / "view.xml").write_text(
         f"<odoo><record id='x' model='ir.ui.view'><field name='inherit_id' ref='base.view_form'/><field name='arch' type='xml'><xpath expr=\"{expression}\" position='inside'><field name='name'{modifier}/></xpath></field></record></odoo>"
     )
@@ -122,6 +127,30 @@ def test_xml_view_preserved_missing_unknown_and_modifier_review(tmp_path: Path):
     finding = next(item for item in analyze_xml(custom, source, target) if item.code == "xml.view_modifier.legacy_attribute")
     assert finding.severity is Severity.REVIEW_REQUIRED
     assert finding.source_state == "supported" and finding.target_state == "rejected"
+
+
+def test_xml_states_and_attrs_are_distinct_view_findings(tmp_path: Path):
+    custom, source, target = _xml_indexes(tmp_path / "both", "//field[@name='name']", attrs=True, states=True)
+    findings = [item for item in analyze_xml(custom, source, target) if item.code == "xml.view_modifier.legacy_attribute"]
+    assert {item.object_name for item in findings} == {"attrs", "states"}
+    assert all(item.severity is Severity.REVIEW_REQUIRED for item in findings)
+    assert all(item.migration_step == "16_to_17" and item.source_state == "supported" and item.target_state == "rejected" for item in findings)
+
+
+def test_xml_modifier_detection_ignores_non_view_qweb_comments_and_text(tmp_path: Path):
+    addon = tmp_path / "demo"; addon.mkdir(parents=True)
+    (addon / "__manifest__.py").write_text("{'name': 'Demo'}")
+    (addon / "unrelated.xml").write_text(
+        "<odoo>"
+        "<!-- attrs='ignored' states='ignored' -->"
+        "<record id='data' model='x.data'><field name='value' attrs='ignored' states='ignored'>text attrs states</field></record>"
+        "<template id='qweb'><div attrs='qweb' states='qweb'>text attrs states</div></template>"
+        "</odoo>"
+    )
+    custom = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
+    source = OdooIndex("16", {})
+    target = OdooIndex("17", {})
+    assert [item for item in analyze_xml(custom, source, target) if item.code == "xml.view_modifier.legacy_attribute"] == []
 
 
 def test_security_standard_custom_missing_and_malformed(tmp_path: Path):

@@ -25,7 +25,7 @@ console = Console()
 
 def _terminal_text(value: object) -> str:
     """Keep normal CLI output usable on legacy Windows code pages."""
-    return str(value).translate(str.maketrans({"→": "->", "•": "-", "—": "-", "…": "..."}))
+    return str(value).translate({0x2192: "->", 0x2022: "-", 0x2014: "-", 0x2026: "..."})
 
 
 @app.command()
@@ -36,7 +36,7 @@ def plan(
     p = build_plan(source, target)
     console.print(f"[bold]Migration path:[/bold] {_terminal_text(p.path_label)}")
     for step in p.steps:
-        console.print(f"  • {step.source} → {step.target}")
+        console.print(f"  - {step.source} -> {step.target}")
 
 
 @source_app.command("ensure")
