@@ -4,7 +4,7 @@ from odoo_migrator.analysis.compat import Finding, Severity
 from odoo_migrator.sources.indexer import OdooIndex
 
 
-def analyze(custom: OdooIndex, target: OdooIndex) -> list[Finding]:
+def analyze(custom: OdooIndex, target: OdooIndex, *, target_version: int = 15, migration_step: str = "14_to_15") -> list[Finding]:
     findings = []
     for name, module in custom.modules.items():
         for path in Path(module.path).rglob("ir.model.access.csv"):
@@ -17,19 +17,19 @@ def analyze(custom: OdooIndex, target: OdooIndex) -> list[Finding]:
                     model_name = target.resolve_model_external_id(model_ref) or custom.resolve_model_external_id(model_ref)
                     if model_ref and (not model_name or (model_name not in target.models and model_name not in custom.models)):
                         findings.append(Finding(Severity.BLOCKER, "security.model_missing", name,
-                            f"Access rule references model '{model_ref}', which is absent from the target source.",
-                            path.relative_to(Path(module.path)).as_posix(), rule_id="security.model_missing.14_to_15",
-                            migration_step="14_to_15", object_name=model_ref, suggested_action="Review or remove the access rule."))
+                            f"Access rule references model '{model_ref}', which is absent from Odoo {target_version}.",
+                            path.relative_to(Path(module.path)).as_posix(), rule_id=f"security.model_missing.{migration_step}",
+                            migration_step=migration_step, object_name=model_ref, suggested_action="Review or remove the access rule."))
                     group_ref = row.get("group_id:id", "")
                     if "." not in group_ref and group_ref:
                         group_ref = f"{name}.{group_ref}"
                     if group_ref and group_ref not in target.xml_ids and group_ref not in custom.xml_ids and group_ref != "1":
                         findings.append(Finding(Severity.REVIEW_REQUIRED, "security.group_missing", name,
-                            f"Access rule references group '{group_ref}', which is absent from the target index.",
-                            path.relative_to(Path(module.path)).as_posix(), rule_id="security.group_missing.14_to_15",
-                            migration_step="14_to_15", object_name=group_ref, suggested_action="Verify the group external ID."))
+                            f"Access rule references group '{group_ref}', which is absent from Odoo {target_version}.",
+                            path.relative_to(Path(module.path)).as_posix(), rule_id=f"security.group_missing.{migration_step}",
+                            migration_step=migration_step, object_name=group_ref, suggested_action="Verify the group external ID."))
             except (OSError, UnicodeError, ValueError, csv.Error) as exc:
                 findings.append(Finding(Severity.BLOCKER, "security.access_csv.invalid", name, str(exc),
-                    path.relative_to(Path(module.path)).as_posix(), rule_id="security.access_csv.invalid.14_to_15",
-                    migration_step="14_to_15", suggested_action="Correct the access CSV before migration."))
+                    path.relative_to(Path(module.path)).as_posix(), rule_id=f"security.access_csv.invalid.{migration_step}",
+                    migration_step=migration_step, suggested_action="Correct the access CSV before migration."))
     return findings

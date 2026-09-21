@@ -9,7 +9,17 @@ import hashlib
 import inspect
 import re
 
-INDEX_SCHEMA_VERSION = 4
+INDEX_SCHEMA_VERSION = 5
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        return sorted(_json_safe(item) for item in value)
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 @dataclass(slots=True)
@@ -59,6 +69,7 @@ class ModuleInfo:
     defined_models: set[str] = field(default_factory=set)
     js_modules: set[str] = field(default_factory=set)
     js_dependencies: set[str] = field(default_factory=set)
+    js_module_locations: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {
@@ -67,7 +78,7 @@ class ModuleInfo:
             "depends": self.depends,
             "models": {k: v.to_json() for k, v in self.models.items()},
             "xml_ids": sorted(self.xml_ids),
-            "manifest": self.manifest,
+            "manifest": _json_safe(self.manifest),
             "files": self.files,
             "controllers": self.controllers,
             "assets": sorted(self.assets),
@@ -76,6 +87,7 @@ class ModuleInfo:
             "defined_models": sorted(self.defined_models),
             "js_modules": sorted(self.js_modules),
             "js_dependencies": sorted(self.js_dependencies),
+            "js_module_locations": self.js_module_locations,
         }
 
 
@@ -117,6 +129,10 @@ class OdooIndex:
     def js_modules(self) -> set[str]:
         return {name for module in self.modules.values() for name in module.js_modules}
 
+    @property
+    def js_module_locations(self) -> dict[str, str]:
+        return {name: location for module in self.modules.values() for name, location in module.js_module_locations.items()}
+
     def resolve_model_external_id(self, external_id: str) -> str | None:
         """Resolve Odoo's generated model IDs without assuming one module.
 
@@ -148,7 +164,7 @@ class OdooIndex:
 class SourceIndexer:
     """Lightweight static indexer. It intentionally avoids importing Odoo."""
 
-    def index(self, root: Path, source_commit: str | None = None, cache_dir: Path | None = None) -> OdooIndex:
+    def index(self, root: Path, source_commit: str | None=None, cache_dir: Path | None=None) -> OdooIndex:
         root = Path(root).resolve()
         fingerprint = source_commit or self.project_fingerprint(root)
         cache_key = hashlib.sha256(f"{root}|{fingerprint}|{INDEX_SCHEMA_VERSION}".encode()).hexdigest()[:24]
@@ -215,7 +231,8 @@ class SourceIndexer:
                               manifest=raw.get("manifest", {}), files=raw.get("files", {}), controllers=raw.get("controllers", {}), assets=set(raw.get("assets", [])),
                               views={key: ViewInfo(value["xml_id"], value.get("inherit_id"), tuple(value.get("xpaths", [])), value.get("architecture", "")) for key, value in raw.get("views", {}).items()},
                               model_xml_ids=raw.get("model_xml_ids", {}), defined_models=set(raw.get("defined_models", [])),
-                              js_modules=set(raw.get("js_modules", [])), js_dependencies=set(raw.get("js_dependencies", [])))
+                              js_modules=set(raw.get("js_modules", [])), js_dependencies=set(raw.get("js_dependencies", [])),
+                              js_module_locations=raw.get("js_module_locations", {}))
             for model, model_raw in raw.get("models", {}).items():
                 info.models[model] = ModelInfo(model, set(model_raw.get("methods", [])), set(model_raw.get("fields", [])),
                                                set(model_raw.get("inherits", [])), set(model_raw.get("delegated_inherits", [])), model_raw.get("signatures", {}),
@@ -239,8 +256,9 @@ class SourceIndexer:
             if path.name == "__manifest__.py" or "__pycache__" in path.parts:
                 continue
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
-            except SyntaxError:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                tree = ast.parse(text, filename=str(path))
+            except (OSError, UnicodeError, SyntaxError):
                 continue
             for node in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
                 model_names, inherited, delegated, declared = self._model_definition(node)
@@ -312,11 +330,32 @@ class SourceIndexer:
     @classmethod
     def _scan_javascript(cls, module_dir: Path, module: ModuleInfo) -> None:
         for path in module_dir.rglob("*.js"):
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except (OSError, UnicodeError):
+                continue
             code = cls._strip_js_comments(text)
-            module.js_modules.update(re.findall(r"\bodoo\.define\s*\(\s*['\"]([^'\"]+)['\"]", code))
-            module.js_modules.update(re.findall(r"@odoo-module\s+alias\s*=\s*([^\s*]+)", text))
+            defined = set(re.findall(r"\bodoo\.define\s*\(\s*['\"]([^'\"]+)['\"]", code))
+            aliases = set(re.findall(r"@odoo-module\s+alias\s*=\s*([^\s*]+)", text))
+            es_module = cls._es_module_name(module_dir, path, text)
+            module.js_modules.update(defined | aliases | ({es_module} if es_module else set()))
+            for name in defined | aliases | ({es_module} if es_module else set()):
+                module.js_module_locations.setdefault(name, path.relative_to(module_dir).as_posix())
             module.js_dependencies.update(cls.javascript_dependencies(text))
+
+    @staticmethod
+    def _es_module_name(module_dir: Path, path: Path, text: str) -> str | None:
+        if "@odoo-module" not in text:
+            return None
+        parts = path.relative_to(module_dir).parts
+        try:
+            start = parts.index("static")
+            if parts[start + 1] != "src":
+                return None
+        except (ValueError, IndexError):
+            return None
+        relative = Path(*parts[start + 2:]).with_suffix("").as_posix()
+        return f"@{module_dir.name}/{relative}" if relative else f"@{module_dir.name}"
 
     @classmethod
     def javascript_dependencies(cls, text: str) -> set[str]:
@@ -355,7 +394,7 @@ class SourceIndexer:
         for path in module_dir.rglob("*.xml"):
             try:
                 root = ET.parse(path).getroot()
-            except ET.ParseError:
+            except (ET.ParseError, OSError, UnicodeError):
                 continue
             for elem in root.iter():
                 xml_id = elem.attrib.get("id")

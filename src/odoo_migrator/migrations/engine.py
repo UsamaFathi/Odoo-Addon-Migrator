@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 import shutil
 import json
@@ -10,6 +10,7 @@ import os
 import shutil as _shutil
 from odoo_migrator import __version__
 from odoo_migrator.sources.registry import SourceSnapshot
+from odoo_migrator.validation import validate_project
 
 from odoo_migrator.core.planner import MigrationPlan, build_plan
 from .base import Change, MigrationRule
@@ -65,6 +66,7 @@ class MigrationEngine:
             work_root = staging_root
 
         changes: list[Change] = []
+        planned_rules = [rule for step in plan.steps for rule in self.rules_for(step.source, step.target)]
         try:
             for step in plan.steps:
                 for rule in self.rules_for(step.source, step.target):
@@ -89,6 +91,15 @@ class MigrationEngine:
                 "target_snapshot": target_snapshot.as_dict() if target_snapshot else None,
                 "validation": {"state": "not_run", "level": 0},
                 "rules": sorted({c.rule_id for c in changes}),
+                "rule_versions": {
+                    rule.rule_id: {
+                        "source": rule.source,
+                        "target": rule.target,
+                        "classification": rule.classification.value,
+                        "automatic": rule.automatic,
+                    }
+                    for rule in planned_rules
+                },
                 "changes": [
                     {"rule_id": c.rule_id, "path": c.path.relative_to(work_root).as_posix(), "description": c.description}
                     for c in changes
@@ -96,4 +107,12 @@ class MigrationEngine:
             }, indent=2), encoding="utf-8")
             os.replace(work_root, output_root)
             metadata_path = output_root / ".odoo_migrator_run.json"
+            validation = validate_project(output_root)
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["validation"] = {
+                "state": "passed" if not validation else "failed",
+                "level": 1,
+                "issues": [asdict(item) for item in validation],
+            }
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return MigrationResult(output_root if not dry_run else input_root, plan, tuple(changes), metadata_path)

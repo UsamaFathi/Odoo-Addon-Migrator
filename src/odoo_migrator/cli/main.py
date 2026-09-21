@@ -23,13 +23,18 @@ app.add_typer(source_app, name="source")
 console = Console()
 
 
+def _terminal_text(value: object) -> str:
+    """Keep normal CLI output usable on legacy Windows code pages."""
+    return str(value).translate(str.maketrans({"→": "->", "•": "-", "—": "-", "…": "..."}))
+
+
 @app.command()
 def plan(
     source: int=typer.Option(..., "--from"),
     target: int=typer.Option(..., "--to"),
 ):
     p = build_plan(source, target)
-    console.print(f"[bold]Migration path:[/bold] {p.path_label}")
+    console.print(f"[bold]Migration path:[/bold] {_terminal_text(p.path_label)}")
     for step in p.steps:
         console.print(f"  • {step.source} → {step.target}")
 
@@ -64,7 +69,7 @@ def analyze(
         for step in exc.steps: console.print(f"  Missing pack: {step.source} -> {step.target}")
         raise typer.Exit(2)
     findings = result.findings
-    console.print(f"[bold]Path:[/bold] {result.plan.path_label}")
+    console.print(f"[bold]Path:[/bold] {_terminal_text(result.plan.path_label)}")
     console.print(f"[bold]Custom modules:[/bold] {result.scan.module_count}")
     console.print(f"[bold]Source commit:[/bold] {result.source_snapshot.commit}")
     console.print(f"[bold]Target commit:[/bold] {result.target_snapshot.commit}")
@@ -91,10 +96,10 @@ def migrate(
         console.print("[red]Migration path is not fully supported.[/red]")
         for step in exc.steps: console.print(f"  Missing pack: {step.source} -> {step.target}")
         raise typer.Exit(2)
-    console.print(f"[bold]Path:[/bold] {result.plan.path_label}")
+    console.print(f"[bold]Path:[/bold] {_terminal_text(result.plan.path_label)}")
     console.print(f"[bold]Changes:[/bold] {len(result.changes)}")
     for change in result.changes:
-        console.print(f"  • {change.path}: {change.description}")
+        console.print(f"  - {change.path}: {_terminal_text(change.description)}")
     if not dry_run:
         console.print(f"[green]Migrated copy:[/green] {result.output}")
 

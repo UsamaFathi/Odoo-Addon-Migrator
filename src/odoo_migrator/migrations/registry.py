@@ -11,6 +11,8 @@ from odoo_migrator.migrations.v14_to_v15.manifest import Manifest14To15Rule
 from odoo_migrator.migrations.v14_to_v15 import frontend, python, reports, security, xml
 from odoo_migrator.migrations.v15_to_v16.manifest import Manifest15To16Rule
 from odoo_migrator.migrations.v15_to_v16 import frontend as frontend16, python as python16, reports as reports16, security as security16, xml as xml16
+from odoo_migrator.migrations.v16_to_v17.manifest import Manifest16To17Rule
+from odoo_migrator.migrations.v16_to_v17 import dependencies as dependencies17, frontend as frontend17, python as python17, reports as reports17, security as security17, xml as xml17
 
 
 Analyzer = Callable[[OdooIndex, OdooIndex, OdooIndex, SourceDiff], list[Finding]]
@@ -111,4 +113,14 @@ def default_registry() -> MigrationPackRegistry:
             lambda custom, source, target, diff: reports16.analyze(custom, target),
         ),
         rule_factory=lambda: [Manifest15To16Rule()]))
+    registry.register(MigrationPack(16, 17,
+        analyzers=(
+            lambda custom, source, target, diff: python17.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: dependencies17.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: xml17.analyze(custom, source, target),
+            lambda custom, source, target, diff: security17.analyze(custom, target),
+            lambda custom, source, target, diff: frontend17.analyze(custom, source, target),
+            lambda custom, source, target, diff: reports17.analyze(custom, target),
+        ),
+        rule_factory=lambda: [Manifest16To17Rule()]))
     return registry

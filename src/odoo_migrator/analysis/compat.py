@@ -68,14 +68,18 @@ def compare_custom_to_target(custom: OdooIndex, source: OdooIndex, target: OdooI
             if dependency not in target.modules and dependency not in custom.modules:
                 findings.append(Finding(
                     Severity.BLOCKER, "dependency.missing", module_name,
-                    f"Dependency '{dependency}' is not present in the target source index."
+                    f"Dependency '{dependency}' is not present in the target source index.",
+                    rule_id=None, object_name=dependency, source_state="present" if dependency in source.modules else "unknown",
+                    target_state="missing", suggested_action="Review the dependency against the target source."
                 ))
 
         for model_name, custom_model in module.models.items():
             if model_name not in target_models and model_name in source_models:
                 findings.append(Finding(
                     Severity.BLOCKER, "model.removed", module_name,
-                    f"Standard model '{model_name}' exists in source but not target."
+                    f"Standard model '{model_name}' exists in source but not target.",
+                    object_name=model_name, source_state="present", target_state="removed",
+                    suggested_action="Select a verified replacement model."
                 ))
                 continue
             if model_name not in source_models:
@@ -89,7 +93,9 @@ def compare_custom_to_target(custom: OdooIndex, source: OdooIndex, target: OdooI
                 if method not in new.methods:
                     findings.append(Finding(
                         Severity.REVIEW_REQUIRED, "method.missing_target", module_name,
-                        f"Override candidate '{model_name}.{method}()' exists in source Odoo but not target. Review migration."
+                        f"Override candidate '{model_name}.{method}()' exists in source Odoo but not target. Review migration.",
+                        object_name=f"{model_name}.{method}", source_state="present", target_state="removed",
+                        suggested_action="Review the target API and business behavior."
                     ))
 
     return findings

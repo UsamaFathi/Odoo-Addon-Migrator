@@ -1,0 +1,7 @@
+<odoo>
+    <template id="report_realistic_document" inherit_id="sale.report_saleorder_document">
+        <xpath expr="//div[@class='page']" position="inside">
+            <span t-esc="doc.name"/>
+        </xpath>
+    </template>
+</odoo>

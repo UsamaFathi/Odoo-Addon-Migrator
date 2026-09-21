@@ -34,11 +34,12 @@ def test_registry_support_and_unsupported_paths():
     registry = default_registry()
     assert registry.supports(14, 15)
     assert registry.supports(15, 16)
-    assert registry.reachable_targets(14) == (15, 16)
-    assert registry.reachable_targets(15) == (16,)
-    assert registry.missing_steps(build_plan(14, 17).steps)[0].label == "16 -> 17"
-    with pytest.raises(UnsupportedMigrationPathError):
-        MigrationEngine(registry).rules_for(16, 17)
+    assert registry.supports(16, 17)
+    assert registry.reachable_targets(14) == (15, 16, 17)
+    assert registry.reachable_targets(15) == (16, 17)
+    assert registry.reachable_targets(16) == (17,)
+    assert registry.missing_steps(build_plan(14, 18).steps)[0].label == "17 -> 18"
+    assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(16, 17)] == ["manifest.version.16_to_17"]
 
 
 def test_registry_rejects_invalid_and_duplicate_packs():
@@ -82,11 +83,11 @@ def test_services_refuse_full_unsupported_path(tmp_path: Path):
     custom = tmp_path / "custom" / "demo"; custom.mkdir(parents=True)
     (custom / "__manifest__.py").write_text("{'name': 'Demo', 'version': '14.0.1'}")
     with pytest.raises(UnsupportedMigrationPathError) as exc:
-        AnalysisService().analyze(custom.parent, 14, 17)
-    assert [(step.source, step.target) for step in exc.value.steps] == [(16, 17)]
+        AnalysisService().analyze(custom.parent, 14, 18)
+    assert [(step.source, step.target) for step in exc.value.steps] == [(17, 18)]
 
 
 def test_cli_reports_missing_pack_without_traceback(tmp_path: Path):
-    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "--from", "14", "--to", "17"])
+    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "--from", "14", "--to", "18"])
     assert result.exit_code == 2
-    assert "Missing pack: 16 -> 17" in result.stdout
+    assert "Missing pack: 17 -> 18" in result.stdout
