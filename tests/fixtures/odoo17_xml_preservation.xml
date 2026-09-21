@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+  <!-- preserve this comment -->
+  <record id="target_view" model="ir.ui.view">
+    <field name="name">Target view</field>
+    <field name="arch" type="xml">
+      <tree class="target">
+        <field name="name"/>
+      </tree>
+      <form>
+        <field name="lines">
+          <tree class="embedded">
+            <field name="line_name"/>
+          </tree>
+        </field>
+      </form>
+    </field>
+  </record>
+  <record id="unrelated_data" model="x.data">
+    <field name="payload">tree,form</field>
+    <tree/>
+  </record>
+  <template id="unrelated_qweb">
+    <t>tree appears as text</t>
+  </template>
+  <record id="after_view" model="x.data">
+    <field name="value">after</field>
+  </record>
+</odoo>

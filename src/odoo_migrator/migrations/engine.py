@@ -101,7 +101,8 @@ class MigrationEngine:
                     for rule in planned_rules
                 },
                 "changes": [
-                    {"rule_id": c.rule_id, "path": c.path.relative_to(work_root).as_posix(), "description": c.description}
+                    {"rule_id": c.rule_id, "path": c.path.relative_to(work_root).as_posix(), "description": c.description,
+                     "migration_step": c.migration_step}
                     for c in changes
                 ],
             }, indent=2), encoding="utf-8")

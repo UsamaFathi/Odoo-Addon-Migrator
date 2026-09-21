@@ -12,7 +12,7 @@ from odoo_migrator.migrations.v17_to_v18.manifest import Manifest17To18Rule
 from odoo_migrator.migrations.v17_to_v18.python import analyze as analyze_python
 from odoo_migrator.migrations.v17_to_v18.reports import analyze as analyze_reports
 from odoo_migrator.migrations.v17_to_v18.security import analyze as analyze_security
-from odoo_migrator.migrations.v17_to_v18.xml import TreeToListRule, analyze as analyze_xml
+from odoo_migrator.migrations.v17_to_v18.xml import ActionViewModeTreeToListRule, TreeToListRule, analyze as analyze_xml
 from odoo_migrator.sources.diff import compare_indexes
 from odoo_migrator.sources.indexer import ModelInfo, ModuleInfo, OdooIndex, SourceIndexer, ViewInfo
 from odoo_migrator.sources.registry import SourceSnapshot
@@ -116,9 +116,72 @@ def test_tree_to_list_is_structured_view_only_and_idempotent(tmp_path: Path):
     view = addon / "view.xml"
     view.write_text("<odoo><record id='v' model='ir.ui.view'><field name='arch' type='xml'><tree><field name='name'/></tree></field></record><record id='data' model='x.data'><tree/></record></odoo>")
     rule = TreeToListRule()
-    assert len(rule.apply(tmp_path)) == 1
+    changes = rule.apply(tmp_path)
+    assert len(changes) == 1 and changes[0].migration_step == "17_to_18"
     text = view.read_text()
-    assert "<list>" in text and "model=\"x.data\"><tree" in text
+    assert "<list>" in text and "model='x.data'><tree" in text
+    assert rule.apply(tmp_path) == []
+
+
+def test_tree_to_list_preserves_declaration_comments_and_unrelated_xml(tmp_path: Path):
+    fixture = Path(__file__).parent / "fixtures" / "odoo17_xml_preservation.xml"
+    view = tmp_path / "view.xml"
+    shutil.copyfile(fixture, view)
+    before = view.read_bytes()
+
+    assert len(TreeToListRule().apply(tmp_path)) == 1
+    after = view.read_bytes()
+
+    assert after.startswith(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+    assert b"<!-- preserve this comment -->" in after
+    assert b"<list class=\"target\">" in after and b"<field name=\"name\"/>" in after
+    assert b"<list class=\"embedded\">" in after and b"<field name=\"line_name\"/>" in after
+    assert b"<record id=\"unrelated_data\" model=\"x.data\">" in after
+    assert b"<field name=\"payload\">tree,form</field>" in after and b"<tree/>" in after
+    assert b"<template id=\"unrelated_qweb\">" in after and b"tree appears as text" in after
+    assert b"<record id=\"after_view\" model=\"x.data\">" in after and b">after</field>" in after
+    assert b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>" in before
+    assert TreeToListRule().apply(tmp_path) == []
+
+
+def test_action_view_mode_tree_to_list_is_structured_and_idempotent(tmp_path: Path):
+    addon = tmp_path / "demo"; addon.mkdir(parents=True)
+    (addon / "__manifest__.py").write_text("{'name': 'Demo'}")
+    actions = addon / "actions.xml"
+    actions.write_text("""<?xml version="1.0"?>
+<odoo>
+  <!-- tree,form in a comment must stay unchanged -->
+  <record id="action_one" model="ir.actions.act_window">
+    <field name="view_mode">tree,form</field>
+    <field name="name">tree,form</field>
+    <field name="binding_view_types">tree,form</field>
+  </record>
+  <record id="action_two" model="ir.actions.act_window">
+    <field name="view_mode">kanban,tree,form</field>
+  </record>
+  <record id="action_three" model="ir.actions.act_window">
+    <field name="view_mode">list,form</field>
+  </record>
+  <record id="action_view" model="ir.actions.act_window.view">
+    <field name="view_mode">kanban,tree,form</field>
+  </record>
+  <record id="unrelated" model="x.data">
+    <field name="view_mode">tree,form</field>
+  </record>
+  <template id="qweb_text"><t>tree,form</t></template>
+</odoo>
+""")
+
+    rule = ActionViewModeTreeToListRule()
+    changes = rule.apply(tmp_path)
+    assert len(changes) == 1 and changes[0].migration_step == "17_to_18"
+    text = actions.read_text()
+    assert '<field name="view_mode">list,form</field>' in text
+    assert '<field name="view_mode">kanban,list,form</field>' in text
+    assert '<field name="binding_view_types">tree,form</field>' in text
+    assert '<field name="name">tree,form</field>' in text
+    assert '<record id="unrelated" model="x.data">' in text and '<field name="view_mode">tree,form</field>' in text
+    assert '<template id="qweb_text"><t>tree,form</t></template>' in text
     assert rule.apply(tmp_path) == []
 
 
@@ -197,12 +260,18 @@ def test_application_17_to_18_records_source_target_metadata_and_validation(tmp_
     analysis = AnalysisService().analyze(custom, 17, 18, manager=_Manager(roots))
     assert any(item.code == "frontend.asset_bundle.removed" for item in analysis.findings)
     assert any(item.code == "xml.xpath.target_missing" for item in analysis.findings)
-    assert [item.rule_id for item in analysis.auto_fix_candidates] == ["manifest.version.17_to_18", "xml.view_root.tree_to_list.17_to_18"]
+    assert [item.rule_id for item in analysis.auto_fix_candidates] == [
+        "manifest.version.17_to_18",
+        "xml.view_root.tree_to_list.17_to_18",
+        "xml.action_view_mode.tree_to_list.17_to_18",
+    ]
     output = tmp_path / "output"
     result = MigrationService().migrate(custom, output, analysis)
     assert "17.0.4.2.1" in (custom / "__manifest__.py").read_text()
     assert "18.0.4.2.1" in (output / "__manifest__.py").read_text()
-    assert "<list" in (output / "views" / "sale_order_views.xml").read_text()
+    output_views = (output / "views" / "sale_order_views.xml").read_text()
+    assert "<list" in output_views
+    assert '<field name="view_mode">list,form</field>' in output_views
     metadata = json.loads(result.metadata_path.read_text())
     assert metadata["migration_path"] == ["17_to_18"]
     assert metadata["source_snapshot"]["commit"] == "sha-17"
@@ -212,6 +281,7 @@ def test_application_17_to_18_records_source_target_metadata_and_validation(tmp_
     assert metadata["output_path"] == str(output.resolve())
     assert metadata["created_at"].endswith("+00:00")
     assert "manifest.version.17_to_18" in metadata["rule_versions"]
+    assert {item["migration_step"] for item in metadata["changes"]} == {"17_to_18"}
     assert metadata["validation"]["state"] == "passed"
     assert validate_project(output) == ()
 

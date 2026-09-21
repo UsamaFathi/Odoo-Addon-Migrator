@@ -135,5 +135,5 @@ def default_registry() -> MigrationPackRegistry:
             lambda custom, source, target, diff: frontend18.analyze(custom, source, target),
             lambda custom, source, target, diff: reports18.analyze(custom, target),
         ),
-        rule_factory=lambda: [Manifest17To18Rule(), xml18.TreeToListRule()]))
+        rule_factory=lambda: [Manifest17To18Rule(), xml18.TreeToListRule(), xml18.ActionViewModeTreeToListRule()]))
     return registry

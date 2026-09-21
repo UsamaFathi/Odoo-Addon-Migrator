@@ -19,4 +19,13 @@
             </xpath>
         </field>
     </record>
+    <record id="action_realistic_sale_order" model="ir.actions.act_window">
+        <field name="name">Realistic Sale Orders</field>
+        <field name="res_model">sale.order</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+    <record id="action_realistic_sale_order_list" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_realistic_sale_order"/>
+        <field name="view_mode">tree</field>
+    </record>
 </odoo>

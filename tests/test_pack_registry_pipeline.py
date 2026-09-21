@@ -43,7 +43,8 @@ def test_registry_support_and_unsupported_paths():
     assert registry.missing_steps(build_plan(14, 19).steps)[0].label == "18 -> 19"
     assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(16, 17)] == ["manifest.version.16_to_17"]
     assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(17, 18)] == [
-        "manifest.version.17_to_18", "xml.view_root.tree_to_list.17_to_18"
+        "manifest.version.17_to_18", "xml.view_root.tree_to_list.17_to_18",
+        "xml.action_view_mode.tree_to_list.17_to_18"
     ]
 
 

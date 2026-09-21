@@ -11,6 +11,7 @@ class Change:
     rule_id: str
     path: Path
     description: str
+    migration_step: str | None = None
 
 
 class Classification(str, Enum):

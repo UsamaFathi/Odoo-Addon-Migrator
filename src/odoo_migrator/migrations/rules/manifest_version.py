@@ -36,7 +36,12 @@ class ManifestVersionRule(MigrationRule):
                 ast.literal_eval(updated)
             except Exception:
                 continue
-            changes.append(Change(self.rule_id, path, f"Manifest version {current} → {new_version}"))
+            changes.append(Change(
+                self.rule_id,
+                path,
+                f"Manifest version {current} → {new_version}",
+                migration_step=f"{self.source}_to_{self.target}",
+            ))
             if not dry_run:
                 path.write_text(updated, encoding="utf-8")
         return changes
