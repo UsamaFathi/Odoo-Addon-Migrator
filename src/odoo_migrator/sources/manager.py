@@ -67,10 +67,28 @@ class SourceManager:
         if selected is SourceMode.VERIFIED_SNAPSHOT:
             # Fetch only the configured object. Never fetch/reset the moving
             # branch for a verified cache, including when refresh=True.
-            self._run([git, "-C", str(dest), "fetch", "--no-tags", "origin",
-                       spec.verified_commit, "--depth", "1"])
-            self._run([git, "-C", str(dest), "checkout", "--detach", "--force",
-                       spec.verified_commit])
+            try:
+                self._run([git, "-C", str(dest), "fetch", "--no-tags", "origin",
+                           spec.verified_commit, "--depth", "1"])
+            except SourceManagerError as first_error:
+                # Some Git servers do not advertise arbitrary SHA wants.
+                # Deepen from the official branch as a fallback, but still
+                # checkout only the configured object and never reset to the
+                # branch head.
+                try:
+                    self._run([git, "-C", str(dest), "fetch", "--no-tags", "origin", spec.branch])
+                except SourceManagerError as fallback_error:
+                    raise SourceManagerError(
+                        f"Unable to fetch verified Odoo {spec.version} commit "
+                        f"{spec.verified_commit}: {fallback_error}"
+                    ) from first_error
+            try:
+                self._run([git, "-C", str(dest), "checkout", "--detach", "--force",
+                           spec.verified_commit])
+            except SourceManagerError as exc:
+                raise SourceManagerError(
+                    f"Verified Odoo {spec.version} commit is unavailable: {spec.verified_commit}"
+                ) from exc
             expected = spec.verified_commit
         elif refresh:
             self._run([git, "-C", str(dest), "fetch", "--no-tags", "origin",
@@ -104,7 +122,7 @@ class SourceManager:
                 raise SourceManagerError(f"Source cache metadata mode mismatch: {dest}")
             return SourceSnapshot(
                 int(data["version"]), data["branch"], data["repo_url"],
-                data.get("actual_commit", data["commit"]), dest, stored_mode,
+                data.get("actual_commit") or data.get("commit"), dest, stored_mode,
                 data.get("expected_commit"),
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
