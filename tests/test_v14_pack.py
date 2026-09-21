@@ -3,6 +3,7 @@ from odoo_migrator.migrations.v14_to_v15.python import analyze
 from odoo_migrator.migrations.v14_to_v15.frontend import analyze as frontend_analyze
 from odoo_migrator.migrations.v14_to_v15.xml import analyze as xml_analyze
 from odoo_migrator.migrations.v14_to_v15.security import analyze as security_analyze
+from odoo_migrator.migrations.v14_to_v15.xml import XPathState, _xpath_state
 from odoo_migrator.sources.diff import compare_indexes
 from odoo_migrator.sources.indexer import ModelInfo, ModuleInfo, OdooIndex, SourceIndexer
 from odoo_migrator.application.services import AnalysisResult, MigrationService
@@ -68,3 +69,20 @@ def test_migration_service_rejects_blocked_analysis(tmp_path: Path):
         (Finding(Severity.BLOCKER, "x", "demo", "blocked"),))
     with pytest.raises(ValueError, match="blocked"):
         MigrationService().migrate(tmp_path, tmp_path / "out", result)
+
+
+def test_xpath_state_is_conservative_for_unsupported_expressions():
+    arch = "<form><field name='name'/></form>"
+    assert _xpath_state(arch, "//field[@name='name']") is XPathState.EXISTS
+    assert _xpath_state(arch, "//field[@name='missing']") is XPathState.MISSING
+    assert _xpath_state(arch, "//field[contains(@name, 'na')]") is XPathState.UNKNOWN
+
+
+def test_security_resolves_standard_model_and_custom_group(tmp_path: Path):
+    module = tmp_path / "demo"; module.mkdir()
+    (module / "__manifest__.py").write_text("{'name': 'Demo'}")
+    (module / "groups.xml").write_text("<odoo><record id='group_example' model='res.groups'/></odoo>")
+    (module / "ir.model.access.csv").write_text("id,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink\na,base.model_sale_order,group_example,1,0,0,0\n")
+    custom = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
+    target = OdooIndex("target", {"base": ModuleInfo("base", "base", models={"sale.order": ModelInfo("sale.order")}, model_xml_ids={"base.model_sale_order": "sale.order"})})
+    assert security_analyze(custom, target) == []

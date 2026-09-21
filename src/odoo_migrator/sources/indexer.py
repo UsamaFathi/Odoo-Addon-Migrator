@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 import hashlib
 import inspect
 
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
 
 
 @dataclass(slots=True)
@@ -17,11 +17,12 @@ class ModelInfo:
     methods: set[str] = field(default_factory=set)
     fields: set[str] = field(default_factory=set)
     inherits: set[str] = field(default_factory=set)
+    delegated_inherits: set[str] = field(default_factory=set)
     signatures: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {"name": self.name, "methods": sorted(self.methods), "fields": sorted(self.fields),
-                "inherits": sorted(self.inherits), "signatures": self.signatures}
+                "inherits": sorted(self.inherits), "delegated_inherits": sorted(self.delegated_inherits), "signatures": self.signatures}
 
 
 @dataclass(slots=True)
@@ -47,6 +48,7 @@ class ModuleInfo:
     controllers: dict[str, list[str]] = field(default_factory=dict)
     assets: set[str] = field(default_factory=set)
     views: dict[str, ViewInfo] = field(default_factory=dict)
+    model_xml_ids: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {
@@ -60,6 +62,7 @@ class ModuleInfo:
             "controllers": self.controllers,
             "assets": sorted(self.assets),
             "views": {k: v.to_json() for k, v in self.views.items()},
+            "model_xml_ids": self.model_xml_ids,
         }
 
 
@@ -79,6 +82,7 @@ class OdooIndex:
                 item.methods.update(info.methods)
                 item.fields.update(info.fields)
                 item.inherits.update(info.inherits)
+                item.delegated_inherits.update(info.delegated_inherits)
                 item.signatures.update(info.signatures)
         return merged
 
@@ -88,6 +92,10 @@ class OdooIndex:
         for module in self.modules.values():
             ids.update(module.xml_ids)
         return ids
+
+    @property
+    def model_xml_ids(self) -> dict[str, str]:
+        return {xml_id: model for module in self.modules.values() for xml_id, model in module.model_xml_ids.items()}
 
     def save(self, path: Path) -> None:
         data = {"schema_version": self.schema_version, "source_commit": self.source_commit,
@@ -155,10 +163,10 @@ class SourceIndexer:
         for name, raw in data.get("modules", {}).items():
             info = ModuleInfo(name, raw["path"], raw.get("depends", []), {}, set(raw.get("xml_ids", [])),
                               raw.get("manifest", {}), raw.get("files", {}), raw.get("controllers", {}), set(raw.get("assets", [])),
-                              {key: ViewInfo(value["xml_id"], value.get("inherit_id"), tuple(value.get("xpaths", [])), value.get("architecture", "")) for key, value in raw.get("views", {}).items()})
+                              {key: ViewInfo(value["xml_id"], value.get("inherit_id"), tuple(value.get("xpaths", [])), value.get("architecture", "")) for key, value in raw.get("views", {}).items()}, raw.get("model_xml_ids", {}))
             for model, model_raw in raw.get("models", {}).items():
                 info.models[model] = ModelInfo(model, set(model_raw.get("methods", [])), set(model_raw.get("fields", [])),
-                                               set(model_raw.get("inherits", [])), model_raw.get("signatures", {}))
+                                               set(model_raw.get("inherits", [])), set(model_raw.get("delegated_inherits", [])), model_raw.get("signatures", {}))
             modules[name] = info
         return OdooIndex(data.get("root", ""), modules, data.get("schema_version", INDEX_SCHEMA_VERSION), data.get("source_commit"))
 
@@ -180,7 +188,7 @@ class SourceIndexer:
             except SyntaxError:
                 continue
             for node in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-                model_names = self._model_names(node)
+                model_names, inherited, delegated = self._model_definition(node)
                 if not model_names:
                     continue
                 methods = {n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
@@ -197,7 +205,8 @@ class SourceIndexer:
                     info = module.models.setdefault(model_name, ModelInfo(model_name))
                     info.methods.update(methods)
                     info.fields.update(fields)
-                    info.inherits.update(name for name in model_names if name != model_name)
+                    info.inherits.update(inherited)
+                    info.delegated_inherits.update(delegated)
                     for child in node.body:
                         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                             info.signatures[child.name] = str(inspect.Signature.from_callable(lambda: None)) if False else ast.unparse(child.args)
@@ -210,14 +219,22 @@ class SourceIndexer:
             return [elt.value for elt in value.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)]
         return []
 
-    def _model_names(self, node: ast.ClassDef) -> list[str]:
-        names: list[str] = []
+    def _model_definition(self, node: ast.ClassDef) -> tuple[list[str], list[str], list[str]]:
+        declared: list[str] = []; inherited: list[str] = []; delegated: list[str] = []
         for stmt in node.body:
             if isinstance(stmt, ast.Assign):
                 for target in stmt.targets:
-                    if isinstance(target, ast.Name) and target.id in {"_name", "_inherit"}:
-                        names.extend(self._literal_strings(stmt.value))
-        return list(dict.fromkeys(names))
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if target.id == "_name": declared.extend(self._literal_strings(stmt.value))
+                    elif target.id == "_inherit": inherited.extend(self._literal_strings(stmt.value))
+                    elif target.id == "_inherits" and isinstance(stmt.value, ast.Dict):
+                        for key in stmt.value.keys:
+                            delegated.extend(self._literal_strings(key))
+        # An extension (_inherit only) defines members on the inherited model;
+        # a named model has exactly its own effective technical model name.
+        effective = declared if declared else inherited
+        return list(dict.fromkeys(effective)), list(dict.fromkeys(inherited)), list(dict.fromkeys(delegated))
 
     @staticmethod
     def _is_fields_call(value: ast.AST | None) -> bool:
@@ -238,9 +255,14 @@ class SourceIndexer:
                 if xml_id:
                     module.xml_ids.add(f"{module.name}.{xml_id}")
                 if elem.tag == "record" and elem.attrib.get("model") == "ir.ui.view" and xml_id:
-                    inherit_id = None; xpaths = []
+                    inherit_id = None; xpaths = []; architecture = ""
                     for field in elem.findall("field"):
                         if field.attrib.get("name") == "inherit_id": inherit_id = field.attrib.get("ref")
                         if field.attrib.get("name") == "arch":
                             xpaths = [node.attrib.get("expr", "") for node in field.iter("xpath") if node.attrib.get("expr")]
-                    module.views[f"{module.name}.{xml_id}"] = ViewInfo(f"{module.name}.{xml_id}", inherit_id, tuple(xpaths), ET.tostring(elem, encoding="unicode"))
+                            architecture = "".join(ET.tostring(child, encoding="unicode") for child in field)
+                    module.views[f"{module.name}.{xml_id}"] = ViewInfo(f"{module.name}.{xml_id}", inherit_id, tuple(xpaths), architecture)
+                if elem.tag == "record" and elem.attrib.get("model") == "ir.model" and xml_id:
+                    model_field = next((field.text for field in elem.findall("field") if field.attrib.get("name") == "model"), None)
+                    if model_field:
+                        module.model_xml_ids[f"{module.name}.{xml_id}"] = model_field.strip()

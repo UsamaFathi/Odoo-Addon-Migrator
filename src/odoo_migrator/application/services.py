@@ -21,6 +21,7 @@ class AnalysisResult:
     source_snapshot: SourceSnapshot
     target_snapshot: SourceSnapshot
     findings: tuple[Finding, ...]
+    auto_fix_candidates: tuple["AutoFixCandidate", ...] = ()
 
     @property
     def blockers(self) -> tuple[Finding, ...]:
@@ -28,7 +29,7 @@ class AnalysisResult:
 
     @property
     def auto_fixable(self) -> tuple[Finding, ...]:
-        return tuple(item for item in self.findings if item.severity.value == "info")
+        return tuple()
 
     @property
     def warnings(self) -> tuple[Finding, ...]:
@@ -42,6 +43,13 @@ class AnalysisResult:
 class ProjectScanService:
     def scan(self, root: Path) -> ProjectScan:
         return scan_custom_addons(root)
+
+
+@dataclass(frozen=True, slots=True)
+class AutoFixCandidate:
+    rule_id: str
+    path: str
+    description: str
 
 
 class AnalysisService:
@@ -66,7 +74,13 @@ class AnalysisService:
             if current is None or (item.rule_id and not current.rule_id):
                 unique[identity] = item
         findings = tuple(unique.values())
-        return AnalysisResult(scan, build_plan(source, target), src, dst, findings)
+        plan = build_plan(source, target); engine = MigrationEngine(); candidates = []
+        for step in plan.steps:
+            for rule in engine.rules_for(step.source, step.target):
+                if rule.automatic:
+                    candidates.extend(AutoFixCandidate(change.rule_id, str(change.path), change.description)
+                                      for change in rule.apply(scan.root, dry_run=True))
+        return AnalysisResult(scan, plan, src, dst, findings, tuple(candidates))
 
 
 class MigrationService:

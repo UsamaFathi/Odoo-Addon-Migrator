@@ -14,14 +14,21 @@ def analyze(custom: OdooIndex, target: OdooIndex) -> list[Finding]:
                 if not rows or not required <= set(rows[0]): raise ValueError("missing access CSV columns")
                 for row in rows:
                     model_ref = row.get("model_id:id", "")
-                    model_name = model_ref.split(".", 1)[1] if "." in model_ref else ""
-                    if model_name and model_name not in target.models:
+                    if "." not in model_ref and model_ref:
+                        model_ref = f"{name}.{model_ref}"
+                    model_name = target.model_xml_ids.get(model_ref) or custom.model_xml_ids.get(model_ref)
+                    if not model_name and model_ref.startswith(f"{name}.model_"):
+                        candidate = model_ref.rsplit(".model_", 1)[1].replace("_", ".")
+                        if candidate in custom.models: model_name = candidate
+                    if model_name and model_name not in target.models and model_name not in custom.models:
                         findings.append(Finding(Severity.BLOCKER, "security.model_missing", name,
                             f"Access rule references model '{model_ref}', which is absent from the target source.",
                             path.relative_to(Path(module.path)).as_posix(), rule_id="security.model_missing.14_to_15",
                             migration_step="14_to_15", object_name=model_ref, suggested_action="Review or remove the access rule."))
                     group_ref = row.get("group_id:id", "")
-                    if group_ref and group_ref not in target.xml_ids and group_ref != "1":
+                    if "." not in group_ref and group_ref:
+                        group_ref = f"{name}.{group_ref}"
+                    if group_ref and group_ref not in target.xml_ids and group_ref not in custom.xml_ids and group_ref != "1":
                         findings.append(Finding(Severity.REVIEW_REQUIRED, "security.group_missing", name,
                             f"Access rule references group '{group_ref}', which is absent from the target index.",
                             path.relative_to(Path(module.path)).as_posix(), rule_id="security.group_missing.14_to_15",

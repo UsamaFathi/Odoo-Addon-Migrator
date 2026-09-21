@@ -123,13 +123,21 @@ def main() -> None:
             blocked = counts["blocker"] > 0
             self.migrate_btn.setEnabled(not blocked)
             suffix = " • Migration blocked until blocking issues are resolved." if blocked else ""
-            self.status.setText(f"Analysis complete • {counts['blocker']} blockers • {counts['warning']} warnings • {counts['review_required']} review items{suffix}")
-            self.details.setPlainText("\n".join(f"{item.severity.value.upper()}: {item.module} — {item.message}" for item in result.findings) or "No compatibility findings.")
+            self.status.setText(f"Analysis complete • {len(result.auto_fix_candidates)} auto-fixable • {counts['blocker']} blockers • {counts['warning']} warnings • {counts['review_required']} review items{suffix}")
+            header = f"Source commit: {result.source_snapshot.commit}\nTarget commit: {result.target_snapshot.commit}\nPath: {result.plan.path_label}\n\n"
+            fixes = "\n".join(f"AUTO-FIX: {item.description}" for item in result.auto_fix_candidates)
+            findings = "\n".join(f"{item.severity.value.upper()}: {item.module} — {item.message}" for item in result.findings)
+            self.details.setPlainText(header + "\n".join(part for part in (fixes, findings) if part) or "No compatibility findings.")
         def _migrate(self):
             if not self.analysis: return self._error("Analyze the project before migration.")
             self._start(MigrationService().migrate, Path(self.input_edit.text()), Path(self.output_edit.text()), self.analysis, callback=self._migration_done)
         def _migration_done(self, result):
-            self.status.setText(f"Migration completed: {len(result.changes)} change(s)"); self.open_btn.setEnabled(True); self.details.setPlainText(str(result.metadata_path))
+            from odoo_migrator.validation import validate_project
+            validation = validate_project(result.output)
+            state = "passed" if not validation else f"failed ({len(validation)} issue(s))"
+            unresolved = len(self.analysis.review_required) if self.analysis else 0
+            self.status.setText(f"Migration completed: {len(result.changes)} automatic fixes • {unresolved} review item(s) • Static validation {state}")
+            self.open_btn.setEnabled(True); self.details.setPlainText(f"Output: {result.output}\nMetadata: {result.metadata_path}\nStatic validation: {state}")
         def _start(self, operation, *args, callback=None):
             if self.busy: return self._error("Another operation is still running.")
             self.busy = True; self.progress.show(); self.analyze_btn.setEnabled(False); self.migrate_btn.setEnabled(False)

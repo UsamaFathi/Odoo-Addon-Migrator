@@ -26,3 +26,22 @@ def test_custom_index_cache_invalidates_when_file_changes(tmp_path: Path):
     second = indexer.index(tmp_path, cache_dir=cache)
     assert first.modules["demo"].depends == []
     assert second.modules["demo"].depends == ["sale"]
+
+
+def test_model_name_and_inheritance_are_indexed_separately(tmp_path: Path):
+    mod = tmp_path / "demo"; (mod / "models").mkdir(parents=True)
+    (mod / "__manifest__.py").write_text("{'name': 'Demo'}")
+    (mod / "models" / "model.py").write_text("""from odoo import models, fields
+class New(models.Model):
+    _name = 'custom.model'
+    _inherit = ['sale.order']
+    _inherits = {'res.partner': 'partner_id'}
+    value = fields.Char()
+class Extension(models.Model):
+    _inherit = 'stock.picking'
+    note = fields.Char()
+""")
+    index = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
+    assert set(index.modules["demo"].models) == {"custom.model", "stock.picking"}
+    model = index.modules["demo"].models["custom.model"]
+    assert model.inherits == {"sale.order"}; assert model.delegated_inherits == {"res.partner"}
