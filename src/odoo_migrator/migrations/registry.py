@@ -22,15 +22,71 @@ class MigrationPack:
     rule_factory: Callable[[], list[MigrationRule]] = lambda: []
 
 
+@dataclass(frozen=True, slots=True)
+class UnsupportedMigrationStep:
+    source: int
+    target: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.source} -> {self.target}"
+
+
+class UnsupportedMigrationPathError(ValueError):
+    def __init__(self, steps: tuple[UnsupportedMigrationStep, ...]):
+        self.steps = steps
+        labels = ", ".join(step.label for step in steps)
+        super().__init__(f"Migration path is not fully supported. Missing packs: {labels}")
+
+
 class MigrationPackRegistry:
     def __init__(self):
         self._packs: dict[tuple[int, int], MigrationPack] = {}
 
     def register(self, pack: MigrationPack) -> None:
-        self._packs[(pack.source, pack.target)] = pack
+        if pack.target != pack.source + 1:
+            raise ValueError("Migration packs must target the next adjacent Odoo version.")
+        key = (pack.source, pack.target)
+        if key in self._packs:
+            raise ValueError(f"Migration pack already registered: {pack.source} -> {pack.target}")
+        if any(not callable(analyzer) for analyzer in pack.analyzers):
+            raise TypeError("Every migration-pack analyzer must be callable.")
+        rules = pack.rule_factory()
+        for rule in rules:
+            if (rule.source, rule.target) != key:
+                raise ValueError(f"Rule {rule.rule_id} does not match its migration pack.")
+            for attribute in ("rule_id", "category", "classification", "description", "evidence", "automatic"):
+                if not hasattr(rule, attribute):
+                    raise ValueError(f"Rule is missing required metadata: {attribute}")
+        self._packs[key] = pack
 
     def get(self, source: int, target: int) -> MigrationPack | None:
         return self._packs.get((source, target))
+
+    def supports(self, source: int, target: int) -> bool:
+        return (source, target) in self._packs
+
+    def require(self, source: int, target: int) -> MigrationPack:
+        pack = self.get(source, target)
+        if not pack:
+            raise UnsupportedMigrationPathError((UnsupportedMigrationStep(source, target),))
+        return pack
+
+    def missing_steps(self, steps) -> tuple[UnsupportedMigrationStep, ...]:
+        return tuple(UnsupportedMigrationStep(step.source, step.target) for step in steps if not self.supports(step.source, step.target))
+
+    def require_plan(self, steps) -> None:
+        missing = self.missing_steps(steps)
+        if missing:
+            raise UnsupportedMigrationPathError(missing)
+
+    def reachable_targets(self, source: int) -> tuple[int, ...]:
+        targets = []
+        current = source
+        while self.supports(current, current + 1):
+            current += 1
+            targets.append(current)
+        return tuple(targets)
 
 
 def default_registry() -> MigrationPackRegistry:

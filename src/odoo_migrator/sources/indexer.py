@@ -128,7 +128,7 @@ class SourceIndexer:
 
     def index(self, root: Path, source_commit: str | None = None, cache_dir: Path | None = None) -> OdooIndex:
         root = Path(root).resolve()
-        fingerprint = source_commit or self._project_fingerprint(root)
+        fingerprint = source_commit or self.project_fingerprint(root)
         cache_key = hashlib.sha256(f"{root}|{fingerprint}|{INDEX_SCHEMA_VERSION}".encode()).hexdigest()[:24]
         cache_path = Path(cache_dir or Path.home() / ".odoo-addon-migrator" / "indexes") / f"{cache_key}.json"
         if cache_path.exists():
@@ -161,7 +161,7 @@ class SourceIndexer:
         return result
 
     @staticmethod
-    def _project_fingerprint(root: Path) -> str:
+    def project_fingerprint(root: Path) -> str:
         digest = hashlib.sha256()
         for path in sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts):
             digest.update(path.relative_to(root).as_posix().encode())

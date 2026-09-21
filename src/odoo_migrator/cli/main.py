@@ -15,6 +15,7 @@ from odoo_migrator.analysis.compat import compare_custom_to_target
 from odoo_migrator.migrations.engine import MigrationEngine
 from odoo_migrator.validation import validate_project
 from odoo_migrator.application.services import AnalysisService, MigrationService
+from odoo_migrator.migrations.registry import UnsupportedMigrationPathError
 
 app = typer.Typer(help="Local source-aware Odoo custom-addon migration assistant.")
 source_app = typer.Typer(help="Manage local official Odoo Community source snapshots.")
@@ -55,8 +56,13 @@ def analyze(
     source: int=typer.Option(..., "--from"),
     target: int=typer.Option(..., "--to"),
 ):
-    with console.status("Preparing official Odoo snapshots and indexes..."):
-        result = AnalysisService().analyze(addons, source, target)
+    try:
+        with console.status("Preparing official Odoo snapshots and indexes..."):
+            result = AnalysisService().analyze(addons, source, target)
+    except UnsupportedMigrationPathError as exc:
+        console.print("[red]Migration path is not fully supported.[/red]")
+        for step in exc.steps: console.print(f"  Missing pack: {step.source} -> {step.target}")
+        raise typer.Exit(2)
     findings = result.findings
     console.print(f"[bold]Path:[/bold] {result.plan.path_label}")
     console.print(f"[bold]Custom modules:[/bold] {result.scan.module_count}")
@@ -78,8 +84,13 @@ def migrate(
     target: int=typer.Option(..., "--to"),
     dry_run: bool=typer.Option(False, "--dry-run"),
 ):
-    analysis = AnalysisService().analyze(addons, source, target)
-    result = MigrationService().migrate(addons, output, analysis, dry_run=dry_run)
+    try:
+        analysis = AnalysisService().analyze(addons, source, target)
+        result = MigrationService().migrate(addons, output, analysis, dry_run=dry_run)
+    except UnsupportedMigrationPathError as exc:
+        console.print("[red]Migration path is not fully supported.[/red]")
+        for step in exc.steps: console.print(f"  Missing pack: {step.source} -> {step.target}")
+        raise typer.Exit(2)
     console.print(f"[bold]Path:[/bold] {result.plan.path_label}")
     console.print(f"[bold]Changes:[/bold] {len(result.changes)}")
     for change in result.changes:

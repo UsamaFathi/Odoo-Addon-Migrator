@@ -13,9 +13,7 @@ from odoo_migrator.sources.registry import SourceSnapshot
 
 from odoo_migrator.core.planner import MigrationPlan, build_plan
 from .base import Change, MigrationRule
-from .rules.manifest_version import ManifestVersionRule
-from .v14_to_v15.manifest import Manifest14To15Rule
-from .registry import default_registry
+from .registry import MigrationPackRegistry, default_registry
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,11 +25,11 @@ class MigrationResult:
 
 
 class MigrationEngine:
+    def __init__(self, registry: MigrationPackRegistry | None = None):
+        self.registry = registry or default_registry()
+
     def rules_for(self, source: int, target: int) -> list[MigrationRule]:
-        pack = default_registry().get(source, target)
-        if pack:
-            return pack.rule_factory()
-        return [ManifestVersionRule(source, target)]
+        return self.registry.require(source, target).rule_factory()
 
     def migrate(self, input_root: Path, output_root: Path, source: int, target: int,
                 dry_run: bool = False, source_snapshot: SourceSnapshot | None = None,
@@ -54,6 +52,7 @@ class MigrationEngine:
         if not output_root.parent.is_dir():
             raise ValueError(f"Output parent directory does not exist: {output_root.parent}")
         plan = build_plan(source, target)
+        self.registry.require_plan(plan.steps)
 
         work_root = input_root
         staging_root = None
@@ -69,7 +68,8 @@ class MigrationEngine:
         try:
             for step in plan.steps:
                 for rule in self.rules_for(step.source, step.target):
-                    changes.extend(rule.apply(work_root, dry_run=dry_run))
+                    if rule.automatic:
+                        changes.extend(rule.apply(work_root, dry_run=dry_run))
         except Exception:
             if staging_root and staging_root.exists():
                 shutil.rmtree(staging_root, ignore_errors=True)

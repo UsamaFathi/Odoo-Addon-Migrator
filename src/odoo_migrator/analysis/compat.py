@@ -38,10 +38,10 @@ class Finding:
         return code
 
     @property
-    def identity(self) -> tuple[str, str, str, str | None]:
+    def identity(self) -> tuple[str, str, str, str | None, str | None]:
         if self.object_name:
-            return (self.module, self.concern, self.object_name, None)
-        return (self.module, self.concern, self.message, self.path)
+            return (self.module, self.concern, self.object_name, None, self.migration_step)
+        return (self.module, self.concern, self.message, self.path, self.migration_step)
 
     @property
     def richness(self) -> int:
@@ -49,7 +49,7 @@ class Finding:
 
 
 def deduplicate_findings(findings: list[Finding] | tuple[Finding, ...]) -> tuple[Finding, ...]:
-    selected: dict[tuple[str, str, str, str | None], Finding] = {}
+    selected: dict[tuple[str, str, str, str | None, str | None], Finding] = {}
     for finding in findings:
         key = finding.identity
         current = selected.get(key)

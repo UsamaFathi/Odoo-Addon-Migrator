@@ -8,6 +8,7 @@ from odoo_migrator.analysis.project import scan_custom_addons
 from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.core.planner import build_plan
 from odoo_migrator.migrations.engine import MigrationEngine
+from odoo_migrator.migrations.registry import default_registry
 
 
 def main() -> None:
@@ -104,16 +105,17 @@ def main() -> None:
             self._refresh_path()
         def _refresh_targets(self):
             self.analysis = None; self.migrate_btn.setEnabled(False)
-            source = int(self.source_box.currentText()); current = self.target_box.currentText(); self.target_box.clear(); self.target_box.addItems([str(v) for v in range(source + 1, 20)])
+            source = int(self.source_box.currentText()); current = self.target_box.currentText(); self.target_box.clear(); self.target_box.addItems([str(v) for v in default_registry().reachable_targets(source)])
             if current in [self.target_box.itemText(i) for i in range(self.target_box.count())]: self.target_box.setCurrentText(current)
             self._refresh_path()
         def _refresh_path(self):
             self.analysis = None; self.migrate_btn.setEnabled(False)
-            if not self.target_box.currentText(): return
+            if not self.target_box.currentText(): self.path_label.setText("No implemented migration target"); return
             plan = build_plan(int(self.source_box.currentText()), int(self.target_box.currentText())); self.path_label.setText(plan.path_label)
             if self.input_edit.text(): self.output_edit.setText(str(Path(self.input_edit.text()).parent / f"{Path(self.input_edit.text()).name}_{plan.target}"))
         def _analyze(self):
             if not self.scan: return self._error("Scan a valid addons folder first.")
+            if not self.target_box.currentText(): return self._error("No implemented migration pack is available from this source version.")
             self._start(AnalysisService().analyze, Path(self.input_edit.text()), int(self.source_box.currentText()), int(self.target_box.currentText()), callback=self._analysis_done)
         def _analysis_done(self, result):
             if (str(Path(self.input_edit.text()).resolve()), int(self.source_box.currentText()), int(self.target_box.currentText())) != (str(result.scan.root), result.plan.source, result.plan.target):
