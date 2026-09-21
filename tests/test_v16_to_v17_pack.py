@@ -147,6 +147,9 @@ def test_xml_modifier_detection_ignores_non_view_qweb_comments_and_text(tmp_path
         "<template id='qweb'><div attrs='qweb' states='qweb'>text attrs states</div></template>"
         "</odoo>"
     )
+    (addon / "arch_field.xml").write_text(
+        "<odoo><record id='view' model='ir.ui.view'><field name='arch' type='xml' attrs='data-only'><form/></field></record></odoo>"
+    )
     custom = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
     source = OdooIndex("16", {})
     target = OdooIndex("17", {})

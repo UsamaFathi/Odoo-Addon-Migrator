@@ -20,21 +20,22 @@ def analyze(custom: OdooIndex, source: OdooIndex, target: OdooIndex):
                 for architecture in view_record.findall("field"):
                     if architecture.attrib.get("name") != "arch":
                         continue
-                    for node in architecture.iter():
-                        for attribute in ("attrs", "states"):
-                            if attribute not in node.attrib:
-                                continue
-                            findings.append(Finding(
-                                Severity.REVIEW_REQUIRED,
-                                "xml.view_modifier.legacy_attribute",
-                                module_name,
-                                f"Odoo 17 rejects the view attribute '{attribute}'; its boolean semantics require manual review.",
-                                path.relative_to(Path(module.path)).as_posix(),
-                                rule_id="xml.view_modifier.legacy_attribute.16_to_17",
-                                migration_step="16_to_17",
-                                object_name=attribute,
-                                source_state="supported",
-                                target_state="rejected",
-                                suggested_action="Convert the expression to Odoo 17 inline modifiers only after verifying equivalent behavior.",
-                            ))
+                    for content in architecture:
+                        for node in content.iter():
+                            for attribute in ("attrs", "states"):
+                                if attribute not in node.attrib:
+                                    continue
+                                findings.append(Finding(
+                                    Severity.REVIEW_REQUIRED,
+                                    "xml.view_modifier.legacy_attribute",
+                                    module_name,
+                                    f"Odoo 17 rejects the view attribute '{attribute}'; its boolean semantics require manual review.",
+                                    path.relative_to(Path(module.path)).as_posix(),
+                                    rule_id="xml.view_modifier.legacy_attribute.16_to_17",
+                                    migration_step="16_to_17",
+                                    object_name=attribute,
+                                    source_state="supported",
+                                    target_state="rejected",
+                                    suggested_action="Convert the expression to Odoo 17 inline modifiers only after verifying equivalent behavior.",
+                                ))
     return findings
