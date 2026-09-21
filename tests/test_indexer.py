@@ -37,7 +37,7 @@ def test_javascript_path_index_covers_files_without_odoo_module_marker(tmp_path:
 
     index = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
 
-    assert index.schema_version == INDEX_SCHEMA_VERSION == 6
+    assert index.schema_version == INDEX_SCHEMA_VERSION == 7
     assert "@demo/unmarked" in index.js_modules
     assert index.js_module_locations["@demo/unmarked"] == "static/src/unmarked.js"
 

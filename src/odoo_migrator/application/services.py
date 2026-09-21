@@ -79,7 +79,15 @@ class AnalysisService:
         self.registry.require_plan(plan.steps)
         scan = scan_custom_addons(root); indexer = SourceIndexer()
         snapshots = {version: manager.ensure(version) for version in range(source, target + 1)}
-        indexes = {version: indexer.index(snapshots[version].path, source_commit=snapshots[version].commit) for version in snapshots}
+        indexes = {
+            version: indexer.index(
+                snapshots[version].path,
+                source_commit=snapshots[version].actual_commit,
+                source_mode=snapshots[version].source_mode.value,
+                source_version=version,
+            )
+            for version in snapshots
+        }
         findings = []; step_results = []; candidates = []; engine = MigrationEngine(self.registry)
         with tempfile.TemporaryDirectory(prefix="odoo-migrator-plan-") as staging:
             planning_root = Path(staging) / "project"; shutil.copytree(scan.root, planning_root)

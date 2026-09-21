@@ -9,7 +9,7 @@ import hashlib
 import inspect
 import re
 
-INDEX_SCHEMA_VERSION = 6
+INDEX_SCHEMA_VERSION = 7
 
 
 def _json_safe(value):
@@ -97,6 +97,8 @@ class OdooIndex:
     modules: dict[str, ModuleInfo]
     schema_version: int = INDEX_SCHEMA_VERSION
     source_commit: str | None = None
+    source_mode: str | None = None
+    source_version: int | None = None
 
     @property
     def models(self) -> dict[str, ModelInfo]:
@@ -156,6 +158,7 @@ class OdooIndex:
 
     def save(self, path: Path) -> None:
         data = {"schema_version": self.schema_version, "source_commit": self.source_commit,
+                "source_mode": self.source_mode, "source_version": self.source_version,
                 "root": self.root, "modules": {k: v.to_json() for k, v in self.modules.items()}}
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -164,14 +167,20 @@ class OdooIndex:
 class SourceIndexer:
     """Lightweight static indexer. It intentionally avoids importing Odoo."""
 
-    def index(self, root: Path, source_commit: str | None=None, cache_dir: Path | None=None) -> OdooIndex:
+    def index(self, root: Path, source_commit: str | None=None, cache_dir: Path | None=None,
+              source_mode: str | None=None, source_version: int | None=None) -> OdooIndex:
         root = Path(root).resolve()
         fingerprint = source_commit or self.project_fingerprint(root)
-        cache_key = hashlib.sha256(f"{root}|{fingerprint}|{INDEX_SCHEMA_VERSION}".encode()).hexdigest()[:24]
+        cache_key = hashlib.sha256(
+            f"{root}|{source_version}|{source_mode}|{fingerprint}|{INDEX_SCHEMA_VERSION}".encode()
+        ).hexdigest()[:24]
         cache_path = Path(cache_dir or Path.home() / ".odoo-addon-migrator" / "indexes") / f"{cache_key}.json"
         if cache_path.exists():
             data = json.loads(cache_path.read_text(encoding="utf-8"))
-            if data.get("schema_version") == INDEX_SCHEMA_VERSION and data.get("source_commit") == source_commit:
+            if (data.get("schema_version") == INDEX_SCHEMA_VERSION
+                    and data.get("source_commit") == source_commit
+                    and data.get("source_mode") == source_mode
+                    and data.get("source_version") == source_version):
                 if source_commit is not None or data.get("project_fingerprint") == fingerprint:
                     return self._from_json(data)
         modules: dict[str, ModuleInfo] = {}
@@ -193,7 +202,8 @@ class SourceIndexer:
             self._scan_javascript(module_dir, module)
             self._add_generated_model_ids(module)
             modules[module.name] = module
-        result = OdooIndex(root=str(root), modules=modules, source_commit=source_commit)
+        result = OdooIndex(root=str(root), modules=modules, source_commit=source_commit,
+                           source_mode=source_mode, source_version=source_version)
         result.save(cache_path)
         payload = json.loads(cache_path.read_text(encoding="utf-8")); payload["project_fingerprint"] = fingerprint
         cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -240,7 +250,12 @@ class SourceIndexer:
                                                {k: tuple(v) for k, v in model_raw.get("method_locations", {}).items()},
                                                {k: tuple(v) for k, v in model_raw.get("field_locations", {}).items()})
             modules[name] = info
-        return OdooIndex(data.get("root", ""), modules, data.get("schema_version", INDEX_SCHEMA_VERSION), data.get("source_commit"))
+        return OdooIndex(
+            root=data.get("root", ""), modules=modules,
+            schema_version=data.get("schema_version", INDEX_SCHEMA_VERSION),
+            source_commit=data.get("source_commit"), source_mode=data.get("source_mode"),
+            source_version=data.get("source_version"),
+        )
 
     @staticmethod
     def _manifest_depends(path: Path) -> list[str]:

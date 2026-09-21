@@ -1,5 +1,8 @@
 # Odoo 18.0 to 19.0 evidence
 
+The commits below are the canonical values from
+`odoo_migrator.sources.registry.source_spec`, not an independent pin map.
+
 This pack is based on the exact official Odoo Community snapshots below. The
 source manager and index cache retain these commit values; no moving branch
 head is substituted for them.

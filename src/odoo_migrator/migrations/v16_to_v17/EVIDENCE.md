@@ -1,5 +1,8 @@
 # Odoo 16.0 to 17.0 evidence
 
+The commits below are the canonical values from
+`odoo_migrator.sources.registry.source_spec`, not an independent pin map.
+
 This pack is pinned to the official Odoo Community repository:
 
 | snapshot | branch | commit |
