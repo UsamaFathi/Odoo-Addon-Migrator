@@ -9,6 +9,8 @@ from odoo_migrator.sources.indexer import OdooIndex
 from odoo_migrator.migrations.base import MigrationRule
 from odoo_migrator.migrations.v14_to_v15.manifest import Manifest14To15Rule
 from odoo_migrator.migrations.v14_to_v15 import frontend, python, reports, security, xml
+from odoo_migrator.migrations.v15_to_v16.manifest import Manifest15To16Rule
+from odoo_migrator.migrations.v15_to_v16 import frontend as frontend16, python as python16, reports as reports16, security as security16, xml as xml16
 
 
 Analyzer = Callable[[OdooIndex, OdooIndex, OdooIndex, SourceDiff], list[Finding]]
@@ -100,4 +102,13 @@ def default_registry() -> MigrationPackRegistry:
             lambda custom, source, target, diff: reports.analyze(custom, target),
         ),
         rule_factory=lambda: [Manifest14To15Rule()]))
+    registry.register(MigrationPack(15, 16,
+        analyzers=(
+            lambda custom, source, target, diff: python16.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: xml16.analyze(custom, source, target),
+            lambda custom, source, target, diff: security16.analyze(custom, target),
+            lambda custom, source, target, diff: frontend16.analyze(custom, source, target),
+            lambda custom, source, target, diff: reports16.analyze(custom, target),
+        ),
+        rule_factory=lambda: [Manifest15To16Rule()]))
     return registry

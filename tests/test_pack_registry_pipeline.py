@@ -13,6 +13,8 @@ from odoo_migrator.migrations.rules.manifest_version import ManifestVersionRule
 from odoo_migrator.sources.registry import SourceSnapshot
 from typer.testing import CliRunner
 from odoo_migrator.cli.main import app
+from odoo_migrator.validation import validate_project
+import json
 
 
 def _source_tree(root: Path, version: int) -> Path:
@@ -31,10 +33,12 @@ class _Manager:
 def test_registry_support_and_unsupported_paths():
     registry = default_registry()
     assert registry.supports(14, 15)
-    assert registry.reachable_targets(14) == (15,)
-    assert registry.missing_steps(build_plan(14, 16).steps)[0].label == "15 -> 16"
+    assert registry.supports(15, 16)
+    assert registry.reachable_targets(14) == (15, 16)
+    assert registry.reachable_targets(15) == (16,)
+    assert registry.missing_steps(build_plan(14, 17).steps)[0].label == "16 -> 17"
     with pytest.raises(UnsupportedMigrationPathError):
-        MigrationEngine(registry).rules_for(15, 16)
+        MigrationEngine(registry).rules_for(16, 17)
 
 
 def test_registry_rejects_invalid_and_duplicate_packs():
@@ -53,22 +57,12 @@ def test_multihop_analysis_uses_evolving_staged_custom_state(tmp_path: Path):
     manifest = module / "__manifest__.py"
     manifest.write_text("{'name': 'Demo', 'version': '14.0.1.0.0'}")
     roots = {version: _source_tree(tmp_path, version) for version in (14, 15, 16)}
-    observed = []
-
-    def analyze_15_to_16(custom_index, source_index, target_index, source_diff):
-        version = custom_index.modules["demo"].manifest["version"]
-        observed.append(version)
-        return [Finding(Severity.INFO, "dummy.state", "demo", version, object_name="demo")]
-
     registry = default_registry()
-    registry.register(MigrationPack(15, 16, analyzers=(analyze_15_to_16,),
-        rule_factory=lambda: [ManifestVersionRule(15, 16)]))
     analysis = AnalysisService(registry).analyze(custom, 14, 16, manager=_Manager(roots))
 
-    assert observed == ["15.0.1.0.0"]
     assert [item.migration_step for item in analysis.auto_fix_candidates] == ["14_to_15", "15_to_16"]
     assert analysis.steps[0].custom_fingerprint_before != analysis.steps[0].custom_fingerprint_after
-    assert analysis.steps[1].findings[0].migration_step == "15_to_16"
+    assert analysis.steps[1].custom_fingerprint_before == analysis.steps[0].custom_fingerprint_after
     assert "14.0.1.0.0" in manifest.read_text()
 
     output = tmp_path / "output"
@@ -76,17 +70,23 @@ def test_multihop_analysis_uses_evolving_staged_custom_state(tmp_path: Path):
     assert [change.rule_id for change in result.changes] == ["manifest.version.14_to_15", "manifest.version.15_to_16"]
     assert "16.0.1.0.0" in (output / "demo" / "__manifest__.py").read_text()
     assert "14.0.1.0.0" in manifest.read_text()
+    metadata = json.loads(result.metadata_path.read_text())
+    assert metadata["migration_path"] == ["14_to_15", "15_to_16"]
+    assert metadata["source_snapshot"]["commit"] == "sha-14"
+    assert metadata["target_snapshot"]["commit"] == "sha-16"
+    assert metadata["rules"] == ["manifest.version.14_to_15", "manifest.version.15_to_16"]
+    assert validate_project(output) == ()
 
 
 def test_services_refuse_full_unsupported_path(tmp_path: Path):
     custom = tmp_path / "custom" / "demo"; custom.mkdir(parents=True)
     (custom / "__manifest__.py").write_text("{'name': 'Demo', 'version': '14.0.1'}")
     with pytest.raises(UnsupportedMigrationPathError) as exc:
-        AnalysisService().analyze(custom.parent, 14, 16)
-    assert [(step.source, step.target) for step in exc.value.steps] == [(15, 16)]
+        AnalysisService().analyze(custom.parent, 14, 17)
+    assert [(step.source, step.target) for step in exc.value.steps] == [(16, 17)]
 
 
 def test_cli_reports_missing_pack_without_traceback(tmp_path: Path):
-    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "--from", "14", "--to", "16"])
+    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "--from", "14", "--to", "17"])
     assert result.exit_code == 2
-    assert "Missing pack: 15 -> 16" in result.stdout
+    assert "Missing pack: 16 -> 17" in result.stdout

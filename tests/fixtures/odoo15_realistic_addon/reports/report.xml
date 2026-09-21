@@ -1,0 +1,1 @@
+<odoo><t t-name="demo.report"><t t-inherit="sale.report_saleorder_document"><xpath expr="//div" position="inside"/></t></t></odoo>
