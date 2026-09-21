@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from collections.abc import Callable
 
 from odoo_migrator.analysis.compat import Finding, compare_custom_to_target, deduplicate_findings
 from odoo_migrator.analysis.project import ProjectScan, scan_custom_addons
@@ -70,15 +71,26 @@ class AdjacentAnalysis:
 
 
 class AnalysisService:
-    def __init__(self, registry: MigrationPackRegistry | None = None):
+    def __init__(self, registry: MigrationPackRegistry | None = None, source_manager: SourceManager | None = None):
         self.registry = registry or default_registry()
+        self.source_manager = source_manager
 
-    def analyze(self, root: Path, source: int, target: int, manager: SourceManager | None = None) -> AnalysisResult:
-        manager = manager or SourceManager()
+    def analyze(self, root: Path, source: int, target: int, manager: SourceManager | None = None,
+                progress: Callable[[str, int], None] | None = None) -> AnalysisResult:
+        def report(stage: str, percent: int) -> None:
+            if progress:
+                progress(stage, percent)
+
+        manager = manager or self.source_manager or SourceManager()
+        report("Validating migration path", 2)
         plan = build_plan(source, target)
         self.registry.require_plan(plan.steps)
+        report("Scanning custom addons", 8)
         scan = scan_custom_addons(root); indexer = SourceIndexer()
-        snapshots = {version: manager.ensure(version) for version in range(source, target + 1)}
+        snapshots = {}
+        for offset, version in enumerate(range(source, target + 1)):
+            report(f"Preparing Odoo {version} source", 12 + offset * 6)
+            snapshots[version] = manager.ensure(version)
         indexes = {
             version: indexer.index(
                 snapshots[version].path,
@@ -88,6 +100,7 @@ class AnalysisService:
             )
             for version in snapshots
         }
+        report("Official source indexes ready", 42)
         findings = []; step_results = []; candidates = []; engine = MigrationEngine(self.registry)
         with tempfile.TemporaryDirectory(prefix="odoo-migrator-plan-") as staging:
             planning_root = Path(staging) / "project"; shutil.copytree(scan.root, planning_root)
@@ -99,10 +112,13 @@ class AnalysisService:
                 step_findings = [replace(item, migration_step=item.migration_step or step_key)
                                  for item in compare_custom_to_target(custom_index, indexes[step.source], indexes[step.target])]
                 pack = self.registry.require(step.source, step.target)
-                for analyzer in pack.analyzers:
+                analyzer_names = ("Python / ORM", "Dependencies", "XML / views", "Security", "Frontend", "Reports / QWeb")
+                for index, analyzer in enumerate(pack.analyzers):
+                    report(f"Analyzing {analyzer_names[index] if index < len(analyzer_names) else 'compatibility'} ({step.key})", 45 + index * 7)
                     step_findings.extend(replace(item, migration_step=item.migration_step or step_key)
                                          for item in analyzer(custom_index, indexes[step.source], indexes[step.target], diff))
                 step_candidates = []
+                report(f"Planning safe automatic fixes ({step.key})", 88)
                 for rule in pack.rule_factory():
                     changes = rule.apply(planning_root, dry_run=True)
                     if rule.automatic:
@@ -114,6 +130,7 @@ class AnalysisService:
                 step_results.append(AdjacentAnalysis(step.source, step.target, snapshots[step.source], snapshots[step.target], diff,
                     tuple(step_findings), tuple(step_candidates), before, after))
         findings = deduplicate_findings(findings)
+        report("Analysis complete", 100)
         return AnalysisResult(scan, plan, snapshots[source], snapshots[target], findings, tuple(candidates), tuple(step_results))
 
 
@@ -121,11 +138,15 @@ class MigrationService:
     def __init__(self, registry: MigrationPackRegistry | None = None):
         self.registry = registry or default_registry()
 
-    def migrate(self, root: Path, output: Path, analysis: AnalysisResult, dry_run: bool = False) -> MigrationResult:
+    def migrate(self, root: Path, output: Path, analysis: AnalysisResult, dry_run: bool = False,
+                progress: Callable[[str, int], None] | None = None) -> MigrationResult:
         if analysis.blockers:
             raise ValueError("Migration is blocked until all blocker findings are resolved.")
         self.registry.require_plan(analysis.plan.steps)
         return MigrationEngine(self.registry).migrate(root, output, analysis.plan.source, analysis.plan.target,
                                          dry_run=dry_run,
                                          source_snapshot=analysis.source_snapshot,
-                                         target_snapshot=analysis.target_snapshot)
+                                         target_snapshot=analysis.target_snapshot,
+                                         findings=analysis.findings,
+                                         modules_analyzed=analysis.scan.module_count,
+                                         progress=progress)

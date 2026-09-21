@@ -97,6 +97,11 @@ class MigrationPackRegistry:
             targets.append(current)
         return tuple(targets)
 
+    def versions(self) -> tuple[int, ...]:
+        """Versions represented by registered adjacent production packs."""
+        values = {source for source, _ in self._packs} | {target for _, target in self._packs}
+        return tuple(sorted(values))
+
 
 def default_registry() -> MigrationPackRegistry:
     registry = MigrationPackRegistry()

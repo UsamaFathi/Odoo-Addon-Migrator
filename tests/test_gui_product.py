@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+pytest.importorskip("PySide6")
+
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QApplication
+
+from odoo_migrator.analysis.compat import Finding, Severity
+from odoo_migrator.analysis.project import scan_custom_addons
+from odoo_migrator.ui.main_window import MainWindow
+from odoo_migrator.ui.models.application_state import ApplicationState, suggested_output_path
+from odoo_migrator.ui.models.findings_model import FindingsModel
+from odoo_migrator.ui.pages.project import ProjectPage
+from odoo_migrator.application.services import AnalysisService, MigrationService
+from odoo_migrator.sources.registry import SourceMode, SourceSnapshot
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    app = QApplication.instance() or QApplication([])
+    QSettings("OdooAddonMigrator", "OdooAddonMigrator").clear()
+    return app
+
+
+def _addon(root: Path, name: str, version: str) -> None:
+    module = root / name
+    module.mkdir(parents=True)
+    (module / "__manifest__.py").write_text(repr({"name": name, "version": version}), encoding="utf-8")
+    (module / "models.py").write_text("from odoo import models\n", encoding="utf-8")
+
+
+def test_project_scan_exposes_statistics_and_mixed_versions(tmp_path: Path):
+    _addon(tmp_path, "sale_one", "16.0.1.0.0")
+    _addon(tmp_path, "sale_two", "17.0.1.0.0")
+    scan = scan_custom_addons(tmp_path)
+    assert scan.module_count == 2
+    assert scan.version_counts == {16: 1, 17: 1}
+    assert scan.detected_version is None
+    assert scan.has_version_conflict
+    assert scan.file_statistics["python"] == 4
+
+
+def test_registry_driven_project_targets_and_source_19_no_target(qapp):
+    page = ProjectPage()
+    page.set_source_versions([14, 15, 16, 17, 18, 19], 18)
+    page.set_targets((19,), 19)
+    assert page.selected_target() == 19
+    page.set_source_versions([14, 15, 16, 17, 18, 19], 19)
+    page.set_targets((), None)
+    assert page.selected_target() is None
+    page.close()
+
+
+def test_application_state_output_and_blocker_policy():
+    state = ApplicationState(project_root=Path("C:/addons"), target_version=19)
+    assert suggested_output_path(Path("C:/addons"), 19) == Path("C:/addons_19")
+    finding = Finding(Severity.BLOCKER, "model.removed", "sale", "blocked")
+    assert not state.can_migrate
+    assert finding.severity is Severity.BLOCKER
+
+
+def test_findings_filter_by_step_and_search(qapp):
+    model = FindingsModel()
+    model.setFindings([
+        Finding(Severity.WARNING, "xml.one", "sale", "old view", rule_id="one", migration_step="17_to_18"),
+        Finding(Severity.REVIEW_REQUIRED, "xml.two", "stock", "review asset", rule_id="two", migration_step="18_to_19"),
+    ])
+    model.setFilter(step="18_to_19")
+    assert model.rowCount() == 1 and model.finding(0).module == "stock"
+    model.setFilter(step="All", search="asset")
+    assert model.rowCount() == 1
+
+
+@dataclass
+class _ControlledSources:
+    snapshots: dict[int, SourceSnapshot]
+
+    def ensure(self, version: int):
+        return self.snapshots[version]
+
+
+def test_desktop_workflow_uses_real_services_and_preserves_input(qapp, tmp_path: Path):
+    custom = tmp_path / "custom_addons" / "demo"
+    custom.mkdir(parents=True)
+    manifest = custom / "__manifest__.py"
+    manifest.write_text("{'name': 'Demo', 'version': '18.0.1.0.0'}", encoding="utf-8")
+    before = manifest.read_bytes()
+    snapshots = {}
+    for version in (18, 19):
+        source = tmp_path / f"odoo{version}"
+        base = source / "base"
+        base.mkdir(parents=True)
+        (base / "__manifest__.py").write_text("{'name': 'Base'}", encoding="utf-8")
+        snapshots[version] = SourceSnapshot(version, f"{version}.0", "controlled://odoo", f"{version:040d}", source, SourceMode.VERIFIED_SNAPSHOT, f"{version:040d}")
+    manager = _ControlledSources(snapshots)
+    analysis_service = AnalysisService(source_manager=manager)
+    window = MainWindow(analysis_service=analysis_service, migration_service=MigrationService())
+    assert window.registry.reachable_targets(14) == (15, 16, 17, 18, 19)
+    assert window.registry.reachable_targets(19) == ()
+    window.project_page.path_picker.edit.blockSignals(True)
+    window.project_page.path_picker.setPath(custom.parent)
+    window.project_page.path_picker.edit.blockSignals(False)
+    window.state.reset_project(custom.parent)
+    scan = scan_custom_addons(custom.parent)
+    scan_token = window.state.begin_operation()
+    window._scan_done(scan_token, scan)
+    window.project_page.set_source_versions([18, 19], 18)
+    window._refresh_targets()
+    assert window.project_page.selected_target() == 19
+    analysis_token = window.state.begin_operation()
+    analysis = analysis_service.analyze(custom.parent, 18, 19)
+    window._analysis_done(analysis_token, analysis)
+    output = tmp_path / "custom_addons_19"
+    window.project_page.output.setText(str(output))
+    window._migrate()
+    deadline = time.time() + 10
+    while window.state.migration is None and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert window.state.migration is not None
+    assert output.is_dir()
+    assert (output / "migration_report.html").exists()
+    assert (output / "migration.diff").exists()
+    assert "19.0.1.0.0" in (output / "demo" / "__manifest__.py").read_text(encoding="utf-8")
+    assert manifest.read_bytes() == before
+    window.close()
