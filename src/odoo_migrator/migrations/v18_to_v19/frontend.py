@@ -3,5 +3,5 @@ from odoo_migrator.migrations.rules.source_aware import analyze_frontend as anal
 
 
 def analyze(custom: OdooIndex, source: OdooIndex, target: OdooIndex):
-    return analyze_source_frontend(custom, source, target, source_version=17, target_version=18,
-                                   migration_step="17_to_18")
+    return analyze_source_frontend(custom, source, target, source_version=18, target_version=19,
+                                   migration_step="18_to_19")

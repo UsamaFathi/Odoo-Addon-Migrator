@@ -1,0 +1,7 @@
+<odoo>
+    <template id="realistic_sale_order_report" inherit_id="sale.report_saleorder_document">
+        <xpath expr="//div[@class='page']" position="inside">
+            <p>Odoo 18 realistic report extension.</p>
+        </xpath>
+    </template>
+</odoo>

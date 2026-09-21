@@ -36,15 +36,22 @@ def test_registry_support_and_unsupported_paths():
     assert registry.supports(15, 16)
     assert registry.supports(16, 17)
     assert registry.supports(17, 18)
-    assert registry.reachable_targets(14) == (15, 16, 17, 18)
-    assert registry.reachable_targets(15) == (16, 17, 18)
-    assert registry.reachable_targets(16) == (17, 18)
-    assert registry.reachable_targets(17) == (18,)
-    assert registry.missing_steps(build_plan(14, 19).steps)[0].label == "18 -> 19"
+    assert registry.supports(18, 19)
+    assert registry.reachable_targets(14) == (15, 16, 17, 18, 19)
+    assert registry.reachable_targets(15) == (16, 17, 18, 19)
+    assert registry.reachable_targets(16) == (17, 18, 19)
+    assert registry.reachable_targets(17) == (18, 19)
+    assert registry.reachable_targets(18) == (19,)
+    assert registry.reachable_targets(19) == ()
+    with pytest.raises(ValueError, match="Unsupported Odoo version 20"):
+        build_plan(14, 20)
     assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(16, 17)] == ["manifest.version.16_to_17"]
     assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(17, 18)] == [
         "manifest.version.17_to_18", "xml.view_root.tree_to_list.17_to_18",
         "xml.action_view_mode.tree_to_list.17_to_18"
+    ]
+    assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(18, 19)] == [
+        "manifest.version.18_to_19"
     ]
 
 
@@ -88,12 +95,11 @@ def test_multihop_analysis_uses_evolving_staged_custom_state(tmp_path: Path):
 def test_services_refuse_full_unsupported_path(tmp_path: Path):
     custom = tmp_path / "custom" / "demo"; custom.mkdir(parents=True)
     (custom / "__manifest__.py").write_text("{'name': 'Demo', 'version': '14.0.1'}")
-    with pytest.raises(UnsupportedMigrationPathError) as exc:
-        AnalysisService().analyze(custom.parent, 14, 19)
-    assert [(step.source, step.target) for step in exc.value.steps] == [(18, 19)]
+    with pytest.raises(ValueError, match="Unsupported Odoo version 20"):
+        AnalysisService().analyze(custom.parent, 14, 20)
 
 
 def test_cli_reports_missing_pack_without_traceback(tmp_path: Path):
-    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "--from", "14", "--to", "19"])
+    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "--from", "14", "--to", "20"])
     assert result.exit_code == 2
-    assert "Missing pack: 18 -> 19" in result.stdout
+    assert "Unsupported Odoo version 20" in result.stdout

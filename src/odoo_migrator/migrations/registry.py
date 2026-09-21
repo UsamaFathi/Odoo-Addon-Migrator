@@ -15,6 +15,8 @@ from odoo_migrator.migrations.v16_to_v17.manifest import Manifest16To17Rule
 from odoo_migrator.migrations.v16_to_v17 import dependencies as dependencies17, frontend as frontend17, python as python17, reports as reports17, security as security17, xml as xml17
 from odoo_migrator.migrations.v17_to_v18.manifest import Manifest17To18Rule
 from odoo_migrator.migrations.v17_to_v18 import dependencies as dependencies18, frontend as frontend18, python as python18, reports as reports18, security as security18, xml as xml18
+from odoo_migrator.migrations.v18_to_v19.manifest import Manifest18To19Rule
+from odoo_migrator.migrations.v18_to_v19 import dependencies as dependencies19, frontend as frontend19, python as python19, reports as reports19, security as security19, xml as xml19
 
 Analyzer = Callable[[OdooIndex, OdooIndex, OdooIndex, SourceDiff], list[Finding]]
 
@@ -136,4 +138,14 @@ def default_registry() -> MigrationPackRegistry:
             lambda custom, source, target, diff: reports18.analyze(custom, target),
         ),
         rule_factory=lambda: [Manifest17To18Rule(), xml18.TreeToListRule(), xml18.ActionViewModeTreeToListRule()]))
+    registry.register(MigrationPack(18, 19,
+        analyzers=(
+            lambda custom, source, target, diff: python19.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: dependencies19.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: xml19.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: security19.analyze(custom, target),
+            lambda custom, source, target, diff: frontend19.analyze(custom, source, target),
+            lambda custom, source, target, diff: reports19.analyze(custom, target),
+        ),
+        rule_factory=lambda: [Manifest18To19Rule()]))
     return registry

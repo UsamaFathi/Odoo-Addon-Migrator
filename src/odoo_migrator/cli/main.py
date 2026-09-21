@@ -33,10 +33,14 @@ def plan(
     source: int=typer.Option(..., "--from"),
     target: int=typer.Option(..., "--to"),
 ):
-    p = build_plan(source, target)
+    try:
+        p = build_plan(source, target)
+    except ValueError as exc:
+        console.print(f"[red]{_terminal_text(exc)}[/red]")
+        raise typer.Exit(2)
     console.print(f"[bold]Migration path:[/bold] {_terminal_text(p.path_label)}")
     for step in p.steps:
-        console.print(f"  - {step.source} -> {step.target}")
+        console.print(_terminal_text(f"  - {step.source} -> {step.target}"))
 
 
 @source_app.command("ensure")
@@ -66,7 +70,10 @@ def analyze(
             result = AnalysisService().analyze(addons, source, target)
     except UnsupportedMigrationPathError as exc:
         console.print("[red]Migration path is not fully supported.[/red]")
-        for step in exc.steps: console.print(f"  Missing pack: {step.source} -> {step.target}")
+        for step in exc.steps: console.print(_terminal_text(f"  Missing pack: {step.source} -> {step.target}"))
+        raise typer.Exit(2)
+    except ValueError as exc:
+        console.print(f"[red]{_terminal_text(exc)}[/red]")
         raise typer.Exit(2)
     findings = result.findings
     console.print(f"[bold]Path:[/bold] {_terminal_text(result.plan.path_label)}")
@@ -94,12 +101,15 @@ def migrate(
         result = MigrationService().migrate(addons, output, analysis, dry_run=dry_run)
     except UnsupportedMigrationPathError as exc:
         console.print("[red]Migration path is not fully supported.[/red]")
-        for step in exc.steps: console.print(f"  Missing pack: {step.source} -> {step.target}")
+        for step in exc.steps: console.print(_terminal_text(f"  Missing pack: {step.source} -> {step.target}"))
+        raise typer.Exit(2)
+    except ValueError as exc:
+        console.print(f"[red]{_terminal_text(exc)}[/red]")
         raise typer.Exit(2)
     console.print(f"[bold]Path:[/bold] {_terminal_text(result.plan.path_label)}")
     console.print(f"[bold]Changes:[/bold] {len(result.changes)}")
     for change in result.changes:
-        console.print(f"  - {change.path}: {_terminal_text(change.description)}")
+        console.print(_terminal_text(f"  - {change.path}: {change.description}"))
     if not dry_run:
         console.print(f"[green]Migrated copy:[/green] {result.output}")
 
