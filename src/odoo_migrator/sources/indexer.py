@@ -5,6 +5,10 @@ from pathlib import Path
 import ast
 import json
 import xml.etree.ElementTree as ET
+import hashlib
+import inspect
+
+INDEX_SCHEMA_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -12,9 +16,12 @@ class ModelInfo:
     name: str
     methods: set[str] = field(default_factory=set)
     fields: set[str] = field(default_factory=set)
+    inherits: set[str] = field(default_factory=set)
+    signatures: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> dict:
-        return {"name": self.name, "methods": sorted(self.methods), "fields": sorted(self.fields)}
+        return {"name": self.name, "methods": sorted(self.methods), "fields": sorted(self.fields),
+                "inherits": sorted(self.inherits), "signatures": self.signatures}
 
 
 @dataclass(slots=True)
@@ -24,6 +31,10 @@ class ModuleInfo:
     depends: list[str] = field(default_factory=list)
     models: dict[str, ModelInfo] = field(default_factory=dict)
     xml_ids: set[str] = field(default_factory=set)
+    manifest: dict = field(default_factory=dict)
+    files: dict[str, int] = field(default_factory=dict)
+    controllers: dict[str, list[str]] = field(default_factory=dict)
+    assets: set[str] = field(default_factory=set)
 
     def to_json(self) -> dict:
         return {
@@ -32,6 +43,10 @@ class ModuleInfo:
             "depends": self.depends,
             "models": {k: v.to_json() for k, v in self.models.items()},
             "xml_ids": sorted(self.xml_ids),
+            "manifest": self.manifest,
+            "files": self.files,
+            "controllers": self.controllers,
+            "assets": sorted(self.assets),
         }
 
 
@@ -39,6 +54,8 @@ class ModuleInfo:
 class OdooIndex:
     root: str
     modules: dict[str, ModuleInfo]
+    schema_version: int = INDEX_SCHEMA_VERSION
+    source_commit: str | None = None
 
     @property
     def models(self) -> dict[str, ModelInfo]:
@@ -58,7 +75,8 @@ class OdooIndex:
         return ids
 
     def save(self, path: Path) -> None:
-        data = {"root": self.root, "modules": {k: v.to_json() for k, v in self.modules.items()}}
+        data = {"schema_version": self.schema_version, "source_commit": self.source_commit,
+                "root": self.root, "modules": {k: v.to_json() for k, v in self.modules.items()}}
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -66,19 +84,54 @@ class OdooIndex:
 class SourceIndexer:
     """Lightweight static indexer. It intentionally avoids importing Odoo."""
 
-    def index(self, root: Path) -> OdooIndex:
+    def index(self, root: Path, source_commit: str | None = None, cache_dir: Path | None = None) -> OdooIndex:
         root = Path(root).resolve()
+        cache_key = hashlib.sha256(f"{root}|{source_commit}|{INDEX_SCHEMA_VERSION}".encode()).hexdigest()[:24]
+        cache_path = Path(cache_dir or Path.home() / ".odoo-addon-migrator" / "indexes") / f"{cache_key}.json"
+        if cache_path.exists():
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if data.get("schema_version") == INDEX_SCHEMA_VERSION and data.get("source_commit") == source_commit:
+                return self._from_json(data)
         modules: dict[str, ModuleInfo] = {}
         for manifest in root.rglob("__manifest__.py"):
             if ".git" in manifest.parts:
                 continue
             module_dir = manifest.parent
             module = ModuleInfo(name=module_dir.name, path=str(module_dir))
-            module.depends = self._manifest_depends(manifest)
+            module.manifest = self._manifest(manifest)
+            module.depends = [str(x) for x in module.manifest.get("depends", [])]
+            module.files = {"python": len(list(module_dir.rglob("*.py"))),
+                            "xml": len(list(module_dir.rglob("*.xml"))),
+                            "javascript": len(list(module_dir.rglob("*.js"))),
+                            "csv": len(list(module_dir.rglob("*.csv")))}
+            module.assets = {str(path.relative_to(module_dir)) for path in module_dir.rglob("*")
+                             if path.is_file() and ("static" in path.parts or "assets" in path.parts)}
             self._scan_python(module_dir, module)
             self._scan_xml(module_dir, module)
             modules[module.name] = module
-        return OdooIndex(root=str(root), modules=modules)
+        result = OdooIndex(root=str(root), modules=modules, source_commit=source_commit)
+        result.save(cache_path)
+        return result
+
+    @staticmethod
+    def _manifest(path: Path) -> dict:
+        try:
+            value = ast.literal_eval(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (SyntaxError, ValueError, OSError):
+            return {}
+
+    @staticmethod
+    def _from_json(data: dict) -> OdooIndex:
+        modules = {}
+        for name, raw in data.get("modules", {}).items():
+            info = ModuleInfo(name, raw["path"], raw.get("depends", []), {}, set(raw.get("xml_ids", [])),
+                              raw.get("manifest", {}), raw.get("files", {}), raw.get("controllers", {}), set(raw.get("assets", [])))
+            for model, model_raw in raw.get("models", {}).items():
+                info.models[model] = ModelInfo(model, set(model_raw.get("methods", [])), set(model_raw.get("fields", [])),
+                                               set(model_raw.get("inherits", [])), model_raw.get("signatures", {}))
+            modules[name] = info
+        return OdooIndex(data.get("root", ""), modules, data.get("schema_version", INDEX_SCHEMA_VERSION), data.get("source_commit"))
 
     @staticmethod
     def _manifest_depends(path: Path) -> list[str]:
@@ -115,6 +168,10 @@ class SourceIndexer:
                     info = module.models.setdefault(model_name, ModelInfo(model_name))
                     info.methods.update(methods)
                     info.fields.update(fields)
+                    info.inherits.update(name for name in model_names if name != model_name)
+                    for child in node.body:
+                        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            info.signatures[child.name] = str(inspect.Signature.from_callable(lambda: None)) if False else ast.unparse(child.args)
 
     @staticmethod
     def _literal_strings(value: ast.AST | None) -> list[str]:
