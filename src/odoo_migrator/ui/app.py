@@ -19,6 +19,7 @@ def main() -> None:
         raise SystemExit('Desktop dependency missing. Install with: pip install -e ".[desktop]"') from exc
 
     class MainWindow(QMainWindow):
+
         def __init__(self):
             super().__init__()
             self.setWindowTitle("Odoo Addon Migrator — v0.1")
@@ -55,9 +56,11 @@ def main() -> None:
             wrapper = QWidget(); row = QHBoxLayout(wrapper); row.setContentsMargins(0, 0, 0, 0)
             row.addWidget(edit)
             btn = QPushButton("Browse")
+
             def choose():
                 path = QFileDialog.getExistingDirectory(self, "Select folder")
                 if path: edit.setText(path)
+
             btn.clicked.connect(choose); row.addWidget(btn)
             return wrapper
 
