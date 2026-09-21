@@ -28,6 +28,35 @@ class Finding:
     target_state: str | None = None
     suggested_action: str | None = None
 
+    @property
+    def concern(self) -> str:
+        code = self.code
+        for marker, name in (("method", "method"), ("signature", "signature"), ("field", "field"),
+                             ("model", "model"), ("dependency", "dependency"), ("xpath", "xpath"),
+                             ("inherit", "inherited_view"), ("xml", "xml_id")):
+            if marker in code: return name
+        return code
+
+    @property
+    def identity(self) -> tuple[str, str, str, str | None]:
+        if self.object_name:
+            return (self.module, self.concern, self.object_name, None)
+        return (self.module, self.concern, self.message, self.path)
+
+    @property
+    def richness(self) -> int:
+        return sum(value is not None for value in (self.path, self.line, self.rule_id, self.object_name, self.source_state, self.target_state, self.suggested_action))
+
+
+def deduplicate_findings(findings: list[Finding] | tuple[Finding, ...]) -> tuple[Finding, ...]:
+    selected: dict[tuple[str, str, str, str | None], Finding] = {}
+    for finding in findings:
+        key = finding.identity
+        current = selected.get(key)
+        if current is None or finding.richness > current.richness:
+            selected[key] = finding
+    return tuple(selected.values())
+
 
 def compare_custom_to_target(custom: OdooIndex, source: OdooIndex, target: OdooIndex) -> list[Finding]:
     findings: list[Finding] = []

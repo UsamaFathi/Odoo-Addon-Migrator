@@ -10,8 +10,10 @@ def analyze(custom: OdooIndex, target: OdooIndex) -> list[Finding]:
         for path in Path(module.path).rglob("*.xml"):
             try: root = ET.parse(path).getroot()
             except ET.ParseError: continue
-            for template in root.iter("template"):
+            for template in root.iter():
                 inherit = template.attrib.get("inherit_id") or template.attrib.get("t-inherit")
+                if not inherit:
+                    continue
                 if inherit and "." not in inherit: inherit = f"{name}.{inherit}"
                 if inherit and inherit not in target.xml_ids:
                     findings.append(Finding(Severity.REVIEW_REQUIRED, "report.template_missing", name,

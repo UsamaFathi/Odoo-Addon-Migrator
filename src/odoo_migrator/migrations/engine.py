@@ -15,6 +15,7 @@ from odoo_migrator.core.planner import MigrationPlan, build_plan
 from .base import Change, MigrationRule
 from .rules.manifest_version import ManifestVersionRule
 from .v14_to_v15.manifest import Manifest14To15Rule
+from .registry import default_registry
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,8 +28,9 @@ class MigrationResult:
 
 class MigrationEngine:
     def rules_for(self, source: int, target: int) -> list[MigrationRule]:
-        if (source, target) == (14, 15):
-            return [Manifest14To15Rule()]
+        pack = default_registry().get(source, target)
+        if pack:
+            return pack.rule_factory()
         return [ManifestVersionRule(source, target)]
 
     def migrate(self, input_root: Path, output_root: Path, source: int, target: int,

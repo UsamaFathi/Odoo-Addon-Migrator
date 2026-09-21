@@ -14,12 +14,7 @@ def analyze(custom: OdooIndex, target: OdooIndex) -> list[Finding]:
                 if not rows or not required <= set(rows[0]): raise ValueError("missing access CSV columns")
                 for row in rows:
                     model_ref = row.get("model_id:id", "")
-                    if "." not in model_ref and model_ref:
-                        model_ref = f"{name}.{model_ref}"
-                    model_name = target.model_xml_ids.get(model_ref) or custom.model_xml_ids.get(model_ref)
-                    if not model_name and model_ref.startswith(f"{name}.model_"):
-                        candidate = model_ref.rsplit(".model_", 1)[1].replace("_", ".")
-                        if candidate in custom.models: model_name = candidate
+                    model_name = target.resolve_model_external_id(model_ref) or custom.resolve_model_external_id(model_ref)
                     if model_name and model_name not in target.models and model_name not in custom.models:
                         findings.append(Finding(Severity.BLOCKER, "security.model_missing", name,
                             f"Access rule references model '{model_ref}', which is absent from the target source.",

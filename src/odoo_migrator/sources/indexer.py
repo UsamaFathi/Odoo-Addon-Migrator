@@ -97,6 +97,25 @@ class OdooIndex:
     def model_xml_ids(self) -> dict[str, str]:
         return {xml_id: model for module in self.modules.values() for xml_id, model in module.model_xml_ids.items()}
 
+    def resolve_model_external_id(self, external_id: str) -> str | None:
+        """Resolve Odoo's generated model IDs without assuming one module.
+
+        Odoo's access CSVs commonly use ``model_sale_order`` while XML IDs are
+        also addressable as ``base.model_sale_order`` (or the defining custom
+        module). We accept explicit indexed mappings first, then generated
+        aliases only when they identify exactly one indexed technical model.
+        """
+        value = external_id.strip()
+        explicit = self.model_xml_ids
+        if value in explicit:
+            return explicit[value]
+        short = value.rsplit(".", 1)[-1]
+        if not short.startswith("model_"):
+            return None
+        candidate = short[6:].replace("_", ".")
+        matches = [name for name in self.models if name == candidate]
+        return matches[0] if len(matches) == 1 else None
+
     def save(self, path: Path) -> None:
         data = {"schema_version": self.schema_version, "source_commit": self.source_commit,
                 "root": self.root, "modules": {k: v.to_json() for k, v in self.modules.items()}}
@@ -133,6 +152,7 @@ class SourceIndexer:
                              if path.is_file() and ("static" in path.parts or "assets" in path.parts)}
             self._scan_python(module_dir, module)
             self._scan_xml(module_dir, module)
+            self._add_generated_model_ids(module)
             modules[module.name] = module
         result = OdooIndex(root=str(root), modules=modules, source_commit=source_commit)
         result.save(cache_path)
@@ -156,6 +176,13 @@ class SourceIndexer:
             return value if isinstance(value, dict) else {}
         except (SyntaxError, ValueError, OSError):
             return {}
+
+    @staticmethod
+    def _add_generated_model_ids(module: ModuleInfo) -> None:
+        for model_name in module.models:
+            generated = f"model_{model_name.replace('.', '_')}"
+            module.model_xml_ids.setdefault(generated, model_name)
+            module.model_xml_ids.setdefault(f"{module.name}.{generated}", model_name)
 
     @staticmethod
     def _from_json(data: dict) -> OdooIndex:
