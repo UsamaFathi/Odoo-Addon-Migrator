@@ -19,6 +19,14 @@ class Finding:
     code: str
     module: str
     message: str
+    path: str | None = None
+    line: int | None = None
+    rule_id: str | None = None
+    migration_step: str | None = None
+    object_name: str | None = None
+    source_state: str | None = None
+    target_state: str | None = None
+    suggested_action: str | None = None
 
 
 def compare_custom_to_target(custom: OdooIndex, source: OdooIndex, target: OdooIndex) -> list[Finding]:

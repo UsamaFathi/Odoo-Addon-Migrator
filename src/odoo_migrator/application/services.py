@@ -10,6 +10,8 @@ from odoo_migrator.migrations.engine import MigrationEngine, MigrationResult
 from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.sources.manager import SourceManager
 from odoo_migrator.sources.registry import SourceSnapshot
+from odoo_migrator.sources.diff import compare_indexes
+from odoo_migrator.migrations.v14_to_v15 import python as v15_python, xml as v15_xml, security as v15_security, frontend as v15_frontend, reports as v15_reports
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +35,15 @@ class AnalysisService:
         scan = scan_custom_addons(root); indexer = SourceIndexer()
         source_index = indexer.index(src.path, source_commit=src.commit)
         target_index = indexer.index(dst.path, source_commit=dst.commit)
-        findings = tuple(compare_custom_to_target(scan.index, source_index, target_index))
+        findings = list(compare_custom_to_target(scan.index, source_index, target_index))
+        if (source, target) == (14, 15):
+            diff = compare_indexes(source_index, target_index)
+            findings.extend(v15_python.analyze(scan.index, source_index, target_index, diff))
+            findings.extend(v15_xml.analyze(scan.index, source_index, target_index))
+            findings.extend(v15_security.analyze(scan.index, target_index))
+            findings.extend(v15_frontend.analyze(scan.index))
+            findings.extend(v15_reports.analyze(scan.index, target_index))
+        findings = tuple(findings)
         return AnalysisResult(scan, build_plan(source, target), src, dst, findings)
 
 

@@ -5,6 +5,7 @@ import ast
 import re
 
 from odoo_migrator.migrations.base import Change, MigrationRule
+from odoo_migrator.migrations.base import Classification
 
 _VERSION_LINE = re.compile(r"(?P<prefix>['\"]version['\"]\s*:\s*['\"])(?P<version>[^'\"]+)(?P<suffix>['\"]\s*,?)")
 
@@ -13,9 +14,10 @@ class ManifestVersionRule(MigrationRule):
     """Safely changes only a leading Odoo-major prefix such as 15.0.x -> 16.0.x."""
 
     def __init__(self, source: int, target: int):
-        self.source = source
-        self.target = target
-        self.rule_id = f"manifest.version.{source}_to_{target}"
+        super().__init__(source, target, f"manifest.version.{source}_to_{target}", "manifest",
+                         Classification.SAFE_AUTO_FIX,
+                         "Update the Odoo major version prefix while preserving the addon suffix.",
+                         "Verified against official Odoo 14.0/15.0 addon version conventions.", True)
 
     def apply(self, root: Path, dry_run: bool = False) -> list[Change]:
         changes: list[Change] = []

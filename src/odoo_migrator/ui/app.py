@@ -118,8 +118,10 @@ def main() -> None:
         def _analysis_done(self, result):
             self.analysis = result
             counts = {level: sum(1 for item in result.findings if item.severity.value == level) for level in ("blocker", "warning", "review_required")}
-            self.migrate_btn.setEnabled(True)
-            self.status.setText(f"Analysis complete • {counts['blocker']} blockers • {counts['warning']} warnings • {counts['review_required']} review items")
+            blocked = counts["blocker"] > 0
+            self.migrate_btn.setEnabled(not blocked)
+            suffix = " • Migration blocked until blocking issues are resolved." if blocked else ""
+            self.status.setText(f"Analysis complete • {counts['blocker']} blockers • {counts['warning']} warnings • {counts['review_required']} review items{suffix}")
             self.details.setPlainText("\n".join(f"{item.severity.value.upper()}: {item.module} — {item.message}" for item in result.findings) or "No compatibility findings.")
         def _migrate(self):
             if not self.analysis: return self._error("Analyze the project before migration.")

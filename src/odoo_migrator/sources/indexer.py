@@ -65,6 +65,8 @@ class OdooIndex:
                 item = merged.setdefault(name, ModelInfo(name))
                 item.methods.update(info.methods)
                 item.fields.update(info.fields)
+                item.inherits.update(info.inherits)
+                item.signatures.update(info.signatures)
         return merged
 
     @property
