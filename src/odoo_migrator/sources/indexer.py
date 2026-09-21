@@ -9,7 +9,7 @@ import hashlib
 import inspect
 import re
 
-INDEX_SCHEMA_VERSION = 5
+INDEX_SCHEMA_VERSION = 6
 
 
 def _json_safe(value):
@@ -337,9 +337,11 @@ class SourceIndexer:
             code = cls._strip_js_comments(text)
             defined = set(re.findall(r"\bodoo\.define\s*\(\s*['\"]([^'\"]+)['\"]", code))
             aliases = set(re.findall(r"@odoo-module\s+alias\s*=\s*([^\s*]+)", text))
+            path_module = cls._source_module_name(module_dir, path)
             es_module = cls._es_module_name(module_dir, path, text)
-            module.js_modules.update(defined | aliases | ({es_module} if es_module else set()))
-            for name in defined | aliases | ({es_module} if es_module else set()):
+            names = defined | aliases | ({path_module} if path_module else set()) | ({es_module} if es_module else set())
+            module.js_modules.update(names)
+            for name in names:
                 module.js_module_locations.setdefault(name, path.relative_to(module_dir).as_posix())
             module.js_dependencies.update(cls.javascript_dependencies(text))
 
@@ -347,6 +349,16 @@ class SourceIndexer:
     def _es_module_name(module_dir: Path, path: Path, text: str) -> str | None:
         if "@odoo-module" not in text:
             return None
+        return SourceIndexer._source_module_name(module_dir, path)
+
+    @staticmethod
+    def _source_module_name(module_dir: Path, path: Path) -> str | None:
+        """Return the stable module name for a JavaScript file under static/src.
+
+        Odoo 18 keeps importable source files without the legacy marker. The
+        path remains the deterministic module identity, so omitting it would
+        incorrectly make an existing target module look removed.
+        """
         parts = path.relative_to(module_dir).parts
         try:
             start = parts.index("static")

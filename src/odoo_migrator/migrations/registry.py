@@ -13,7 +13,8 @@ from odoo_migrator.migrations.v15_to_v16.manifest import Manifest15To16Rule
 from odoo_migrator.migrations.v15_to_v16 import frontend as frontend16, python as python16, reports as reports16, security as security16, xml as xml16
 from odoo_migrator.migrations.v16_to_v17.manifest import Manifest16To17Rule
 from odoo_migrator.migrations.v16_to_v17 import dependencies as dependencies17, frontend as frontend17, python as python17, reports as reports17, security as security17, xml as xml17
-
+from odoo_migrator.migrations.v17_to_v18.manifest import Manifest17To18Rule
+from odoo_migrator.migrations.v17_to_v18 import dependencies as dependencies18, frontend as frontend18, python as python18, reports as reports18, security as security18, xml as xml18
 
 Analyzer = Callable[[OdooIndex, OdooIndex, OdooIndex, SourceDiff], list[Finding]]
 
@@ -37,6 +38,7 @@ class UnsupportedMigrationStep:
 
 
 class UnsupportedMigrationPathError(ValueError):
+
     def __init__(self, steps: tuple[UnsupportedMigrationStep, ...]):
         self.steps = steps
         labels = ", ".join(step.label for step in steps)
@@ -44,6 +46,7 @@ class UnsupportedMigrationPathError(ValueError):
 
 
 class MigrationPackRegistry:
+
     def __init__(self):
         self._packs: dict[tuple[int, int], MigrationPack] = {}
 
@@ -123,4 +126,14 @@ def default_registry() -> MigrationPackRegistry:
             lambda custom, source, target, diff: reports17.analyze(custom, target),
         ),
         rule_factory=lambda: [Manifest16To17Rule()]))
+    registry.register(MigrationPack(17, 18,
+        analyzers=(
+            lambda custom, source, target, diff: python18.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: dependencies18.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: xml18.analyze(custom, source, target, diff),
+            lambda custom, source, target, diff: security18.analyze(custom, target),
+            lambda custom, source, target, diff: frontend18.analyze(custom, source, target),
+            lambda custom, source, target, diff: reports18.analyze(custom, target),
+        ),
+        rule_factory=lambda: [Manifest17To18Rule(), xml18.TreeToListRule()]))
     return registry

@@ -1,0 +1,22 @@
+<odoo>
+    <record id="view_order_tree_realistic" model="ir.ui.view">
+        <field name="name">sale.order.tree.realistic</field>
+        <field name="model">sale.order</field>
+        <field name="arch" type="xml">
+            <tree string="Orders">
+                <field name="name"/>
+                <field name="legacy_note"/>
+            </tree>
+        </field>
+    </record>
+    <record id="view_order_tree_inherit_realistic" model="ir.ui.view">
+        <field name="name">sale.order.tree.inherit.realistic</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_tree"/>
+        <field name="arch" type="xml">
+            <xpath expr="//tree" position="inside">
+                <field name="legacy_note"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

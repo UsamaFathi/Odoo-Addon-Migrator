@@ -35,11 +35,16 @@ def test_registry_support_and_unsupported_paths():
     assert registry.supports(14, 15)
     assert registry.supports(15, 16)
     assert registry.supports(16, 17)
-    assert registry.reachable_targets(14) == (15, 16, 17)
-    assert registry.reachable_targets(15) == (16, 17)
-    assert registry.reachable_targets(16) == (17,)
-    assert registry.missing_steps(build_plan(14, 18).steps)[0].label == "17 -> 18"
+    assert registry.supports(17, 18)
+    assert registry.reachable_targets(14) == (15, 16, 17, 18)
+    assert registry.reachable_targets(15) == (16, 17, 18)
+    assert registry.reachable_targets(16) == (17, 18)
+    assert registry.reachable_targets(17) == (18,)
+    assert registry.missing_steps(build_plan(14, 19).steps)[0].label == "18 -> 19"
     assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(16, 17)] == ["manifest.version.16_to_17"]
+    assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(17, 18)] == [
+        "manifest.version.17_to_18", "xml.view_root.tree_to_list.17_to_18"
+    ]
 
 
 def test_registry_rejects_invalid_and_duplicate_packs():
@@ -83,11 +88,11 @@ def test_services_refuse_full_unsupported_path(tmp_path: Path):
     custom = tmp_path / "custom" / "demo"; custom.mkdir(parents=True)
     (custom / "__manifest__.py").write_text("{'name': 'Demo', 'version': '14.0.1'}")
     with pytest.raises(UnsupportedMigrationPathError) as exc:
-        AnalysisService().analyze(custom.parent, 14, 18)
-    assert [(step.source, step.target) for step in exc.value.steps] == [(17, 18)]
+        AnalysisService().analyze(custom.parent, 14, 19)
+    assert [(step.source, step.target) for step in exc.value.steps] == [(18, 19)]
 
 
 def test_cli_reports_missing_pack_without_traceback(tmp_path: Path):
-    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "--from", "14", "--to", "18"])
+    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "--from", "14", "--to", "19"])
     assert result.exit_code == 2
-    assert "Missing pack: 17 -> 18" in result.stdout
+    assert "Missing pack: 18 -> 19" in result.stdout

@@ -1,5 +1,5 @@
 from pathlib import Path
-from odoo_migrator.sources.indexer import SourceIndexer
+from odoo_migrator.sources.indexer import INDEX_SCHEMA_VERSION, SourceIndexer
 
 
 def test_indexer_finds_model_fields_methods_and_xmlids(tmp_path: Path):
@@ -26,6 +26,20 @@ def test_custom_index_cache_invalidates_when_file_changes(tmp_path: Path):
     second = indexer.index(tmp_path, cache_dir=cache)
     assert first.modules["demo"].depends == []
     assert second.modules["demo"].depends == ["sale"]
+
+
+def test_javascript_path_index_covers_files_without_odoo_module_marker(tmp_path: Path):
+    mod = tmp_path / "demo"
+    (mod / "static" / "src").mkdir(parents=True)
+    (mod / "__manifest__.py").write_text("{'name': 'Demo'}\n")
+    path = mod / "static" / "src" / "unmarked.js"
+    path.write_text("export const value = 1;\n")
+
+    index = SourceIndexer().index(tmp_path, cache_dir=tmp_path / "cache")
+
+    assert index.schema_version == INDEX_SCHEMA_VERSION == 6
+    assert "@demo/unmarked" in index.js_modules
+    assert index.js_module_locations["@demo/unmarked"] == "static/src/unmarked.js"
 
 
 def test_model_name_and_inheritance_are_indexed_separately(tmp_path: Path):
