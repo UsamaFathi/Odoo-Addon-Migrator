@@ -13,6 +13,7 @@ from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.analysis.project import scan_custom_addons
 from odoo_migrator.analysis.compat import compare_custom_to_target
 from odoo_migrator.migrations.engine import MigrationEngine
+from odoo_migrator.validation import validate_project
 
 app = typer.Typer(help="Local source-aware Odoo custom-addon migration assistant.")
 source_app = typer.Typer(help="Manage local official Odoo Community source snapshots.")
@@ -96,3 +97,17 @@ def migrate(
         console.print(f"  • {change.path}: {change.description}")
     if not dry_run:
         console.print(f"[green]Migrated copy:[/green] {result.output}")
+
+
+@app.command()
+def validate(path: Path):
+    """Run static validation; this does not prove target runtime compatibility."""
+    items = validate_project(path)
+    if not items:
+        console.print("[green]Static validation passed.[/green]")
+        return
+    table = Table("Level", "Code", "Path", "Message")
+    for item in items:
+        table.add_row(item.level, item.code, item.path, item.message)
+    console.print(table)
+    raise typer.Exit(1)
