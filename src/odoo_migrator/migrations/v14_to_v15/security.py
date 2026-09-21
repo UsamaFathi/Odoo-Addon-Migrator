@@ -15,7 +15,7 @@ def analyze(custom: OdooIndex, target: OdooIndex) -> list[Finding]:
                 for row in rows:
                     model_ref = row.get("model_id:id", "")
                     model_name = target.resolve_model_external_id(model_ref) or custom.resolve_model_external_id(model_ref)
-                    if model_name and model_name not in target.models and model_name not in custom.models:
+                    if model_ref and (not model_name or (model_name not in target.models and model_name not in custom.models)):
                         findings.append(Finding(Severity.BLOCKER, "security.model_missing", name,
                             f"Access rule references model '{model_ref}', which is absent from the target source.",
                             path.relative_to(Path(module.path)).as_posix(), rule_id="security.model_missing.14_to_15",

@@ -45,3 +45,7 @@ class Extension(models.Model):
     assert set(index.modules["demo"].models) == {"custom.model", "stock.picking"}
     model = index.modules["demo"].models["custom.model"]
     assert model.inherits == {"sale.order"}; assert model.delegated_inherits == {"res.partner"}
+    assert index.resolve_model_external_id("demo.model_custom_model") == "custom.model"
+    assert index.resolve_model_external_id("model_custom_model") == "custom.model"
+    assert index.resolve_model_external_id("wrong.model_custom_model") is None
+    assert "demo.model_stock_picking" not in index.model_xml_ids
