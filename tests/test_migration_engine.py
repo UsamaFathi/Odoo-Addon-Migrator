@@ -27,3 +27,11 @@ def test_engine_dry_run_does_not_create_output_or_metadata(tmp_path: Path):
     assert result.metadata_path is None
     assert not out.exists()
     assert "15.0.1" in (mod / "__manifest__.py").read_text()
+
+
+def test_engine_rejects_nested_output(tmp_path: Path):
+    src = tmp_path / "addons"; (src / "demo").mkdir(parents=True)
+    (src / "demo" / "__manifest__.py").write_text("{'name': 'Demo'}\n")
+    import pytest
+    with pytest.raises(ValueError, match="inside the input"):
+        MigrationEngine().migrate(src, src / "migrated", 15, 16)
