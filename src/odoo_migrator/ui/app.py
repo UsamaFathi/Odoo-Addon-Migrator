@@ -1,116 +1,130 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
+from odoo_migrator.analysis.project import scan_custom_addons
 from odoo_migrator.core.planner import build_plan
-from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.migrations.engine import MigrationEngine
 
 
 def main() -> None:
     try:
-        from PySide6.QtCore import QThread, Signal
-        from PySide6.QtWidgets import (
-            QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-            QLineEdit, QMainWindow, QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget
-        )
+        from PySide6.QtCore import QObject, QThread, Signal, Qt
+        from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame, QGridLayout,
+            QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox, QPushButton,
+            QProgressBar, QTextEdit, QVBoxLayout, QWidget)
     except ImportError as exc:
         raise SystemExit('Desktop dependency missing. Install with: pip install -e ".[desktop]"') from exc
 
-    class MainWindow(QMainWindow):
+    class Worker(QObject):
+        done = Signal(object)
+        failed = Signal(str)
+        progress = Signal(str)
 
+        def __init__(self, operation, *args):
+            super().__init__(); self.operation = operation; self.args = args
+
+        def run(self):
+            try: self.done.emit(self.operation(*self.args))
+            except Exception as exc: self.failed.emit(str(exc))
+
+    class DropLineEdit(QLineEdit):
+        pathDropped = Signal(str)
         def __init__(self):
-            super().__init__()
-            self.setWindowTitle("Odoo Addon Migrator — v0.1")
-            self.resize(820, 620)
+            super().__init__(); self.setAcceptDrops(True)
+        def dragEnterEvent(self, event):
+            if event.mimeData().hasUrls(): event.acceptProposedAction()
+        def dropEvent(self, event):
+            urls = event.mimeData().urls()
+            if urls and urls[0].isLocalFile(): self.pathDropped.emit(urls[0].toLocalFile())
 
+    class MainWindow(QMainWindow):
+        def __init__(self):
+            super().__init__(); self.setWindowTitle("Odoo Addon Migrator"); self.resize(980, 720)
+            self.scan = None; self.analysis = None; self.thread = None
+            self.input_edit = DropLineEdit(); self.output_edit = QLineEdit()
             self.source_box = QComboBox(); self.source_box.addItems([str(v) for v in range(14, 20)])
-            self.target_box = QComboBox()
-            self.addons_edit = QLineEdit()
-            self.output_edit = QLineEdit()
-            self.path_label = QLabel()
-            self.log = QTextEdit(); self.log.setReadOnly(True)
+            self.target_box = QComboBox(); self.module_list = QListWidget()
+            self.status = QLabel("Choose a custom addons folder to begin."); self.stats = QLabel("No folder scanned")
+            self.path_label = QLabel("—"); self.progress = QProgressBar(); self.progress.setRange(0, 0); self.progress.hide()
+            self.details = QTextEdit(); self.details.setReadOnly(True)
+            self.analyze_btn = QPushButton("Analyze Project"); self.migrate_btn = QPushButton("Start Migration")
+            self.open_btn = QPushButton("Open Output Folder"); self.open_btn.setEnabled(False)
+            self._build(); self._style(); self._refresh_targets()
+            self.input_edit.textChanged.connect(self._folder_changed); self.input_edit.pathDropped.connect(self._set_input)
+            self.source_box.currentTextChanged.connect(self._refresh_targets); self.target_box.currentTextChanged.connect(self._refresh_path)
+            self.analyze_btn.clicked.connect(self._analyze); self.migrate_btn.clicked.connect(self._migrate); self.open_btn.clicked.connect(self._open_output)
 
-            self.source_box.currentTextChanged.connect(self.refresh_targets)
-            self.target_box.currentTextChanged.connect(self.refresh_plan)
+        def _build(self):
+            def row(label, edit, browse=False):
+                box = QHBoxLayout(); box.addWidget(QLabel(label)); box.addWidget(edit, 1)
+                if browse:
+                    button = QPushButton("Browse"); button.clicked.connect(lambda: self._browse(edit)); box.addWidget(button)
+                return box
+            root = QVBoxLayout(); root.setContentsMargins(28, 24, 28, 24)
+            title = QLabel("Odoo Addon Migrator"); title.setObjectName("title"); root.addWidget(title)
+            root.addWidget(QLabel("Upgrade custom Odoo addons safely and locally."))
+            root.addSpacing(14); root.addLayout(row("Custom addons folder", self.input_edit, True))
+            root.addWidget(self.stats); root.addWidget(self.status)
+            grid = QGridLayout(); grid.addWidget(QLabel("Source version"), 0, 0); grid.addWidget(self.source_box, 0, 1)
+            grid.addWidget(QLabel("Target version"), 0, 2); grid.addWidget(self.target_box, 0, 3)
+            grid.addWidget(QLabel("Migration path"), 1, 0); grid.addWidget(self.path_label, 1, 1, 1, 3)
+            grid.addWidget(QLabel("Output folder"), 2, 0); grid.addWidget(self.output_edit, 2, 1, 1, 3); root.addLayout(grid)
+            root.addWidget(QLabel("Detected addons")); root.addWidget(self.module_list, 1)
+            actions = QHBoxLayout(); actions.addWidget(self.analyze_btn); actions.addWidget(self.migrate_btn); actions.addWidget(self.open_btn); root.addLayout(actions)
+            root.addWidget(self.progress); root.addWidget(QLabel("Analysis and migration details")); root.addWidget(self.details, 1)
+            frame = QFrame(); frame.setLayout(root); self.setCentralWidget(frame)
 
-            form = QFormLayout()
-            form.addRow("Source Odoo version", self.source_box)
-            form.addRow("Target Odoo version", self.target_box)
-            form.addRow("Custom addons", self._path_row(self.addons_edit, False))
-            form.addRow("Output folder", self._path_row(self.output_edit, True))
-            form.addRow("Migration path", self.path_label)
+        def _style(self):
+            self.setStyleSheet("""QMainWindow{background:#f4f6f8} QFrame{background:#fff} QLabel{color:#344054;font-size:13px} #title{font-size:26px;font-weight:700;color:#182230} QLineEdit,QComboBox,QListWidget,QTextEdit{border:1px solid #d0d5dd;border-radius:6px;padding:7px;background:#fff} QPushButton{padding:8px 14px;border-radius:6px;background:#2563eb;color:#fff;font-weight:600} QPushButton:disabled{background:#98a2b3} QProgressBar{height:8px}""")
 
-            ensure_btn = QPushButton("Cache Source + Target")
-            ensure_btn.clicked.connect(self.ensure_sources)
-            migrate_btn = QPushButton("Create Migrated Copy")
-            migrate_btn.clicked.connect(self.run_migration)
-            buttons = QHBoxLayout(); buttons.addWidget(ensure_btn); buttons.addWidget(migrate_btn)
-
-            layout = QVBoxLayout(); layout.addLayout(form); layout.addLayout(buttons); layout.addWidget(self.log)
-            container = QWidget(); container.setLayout(layout); self.setCentralWidget(container)
-            self.refresh_targets()
-
-        def _path_row(self, edit: QLineEdit, output: bool):
-            wrapper = QWidget(); row = QHBoxLayout(wrapper); row.setContentsMargins(0, 0, 0, 0)
-            row.addWidget(edit)
-            btn = QPushButton("Browse")
-
-            def choose():
-                path = QFileDialog.getExistingDirectory(self, "Select folder")
-                if path: edit.setText(path)
-
-            btn.clicked.connect(choose); row.addWidget(btn)
-            return wrapper
-
-        def refresh_targets(self):
-            src = int(self.source_box.currentText())
-            current = self.target_box.currentText()
-            self.target_box.blockSignals(True); self.target_box.clear()
-            self.target_box.addItems([str(v) for v in range(src + 1, 20)])
-            if current and int(current) > src:
-                self.target_box.setCurrentText(current)
-            self.target_box.blockSignals(False)
-            self.refresh_plan()
-
-        def refresh_plan(self):
-            if not self.target_box.currentText():
-                self.path_label.setText("No higher supported target")
-                return
-            p = build_plan(int(self.source_box.currentText()), int(self.target_box.currentText()))
-            self.path_label.setText(p.path_label)
-
-        def ensure_sources(self):
+        def _browse(self, edit):
+            path = QFileDialog.getExistingDirectory(self, "Select custom addons folder")
+            if path: edit.setText(path)
+        def _set_input(self, path): self.input_edit.setText(path)
+        def _folder_changed(self):
+            path = Path(self.input_edit.text())
+            if not path.is_dir(): self.status.setText("Select a valid folder containing Odoo addons."); return
+            self.status.setText("Scanning addons…"); self._start(scan_custom_addons, path, self._scan_done)
+        def _scan_done(self, result):
+            self.scan = result; self.module_list.clear(); self.module_list.addItems(sorted(result.index.modules))
+            files = sum(sum(m.files.values()) for m in result.index.modules.values())
+            self.stats.setText(f"{result.module_count} addons detected  •  {files} source files")
+            versions = {}
+            for module in result.index.modules.values():
+                value = str(module.manifest.get("version", "")); prefix = value.split(".")[0]
+                if prefix.isdigit() and 14 <= int(prefix) <= 19: versions[int(prefix)] = versions.get(int(prefix), 0) + 1
+            if len(versions) == 1: self.source_box.setCurrentText(str(next(iter(versions))))
+            elif len(versions) > 1: self.status.setText("Version conflict detected; please select the source version.")
+            else: self.status.setText("Addons detected. Select source and target versions.")
+            self._refresh_path()
+        def _refresh_targets(self):
+            source = int(self.source_box.currentText()); current = self.target_box.currentText(); self.target_box.clear(); self.target_box.addItems([str(v) for v in range(source + 1, 20)])
+            if current in [self.target_box.itemText(i) for i in range(self.target_box.count())]: self.target_box.setCurrentText(current)
+            self._refresh_path()
+        def _refresh_path(self):
             if not self.target_box.currentText(): return
-            src, dst = int(self.source_box.currentText()), int(self.target_box.currentText())
-            manager = SourceManager()
-            QApplication.setOverrideCursor(Qt.WaitCursor) if False else None
-            try:
-                self.log.append(f"Caching official Odoo {src}.0 source...")
-                a = manager.ensure(src)
-                self.log.append(f"✓ {src}.0 @ {a.commit[:12]}")
-                self.log.append(f"Caching official Odoo {dst}.0 source...")
-                b = manager.ensure(dst)
-                self.log.append(f"✓ {dst}.0 @ {b.commit[:12]}")
-            except SourceManagerError as exc:
-                QMessageBox.critical(self, "Source error", str(exc))
+            plan = build_plan(int(self.source_box.currentText()), int(self.target_box.currentText())); self.path_label.setText(plan.path_label)
+            if self.input_edit.text(): self.output_edit.setText(str(Path(self.input_edit.text()).parent / f"{Path(self.input_edit.text()).name}_{plan.target}"))
+        def _analyze(self):
+            if not self.scan: return self._error("Scan a valid addons folder first.")
+            self.details.setPlainText("Analysis requires cached official source snapshots for the selected versions. Use the CLI source ensure command or Settings in the next desktop milestone.")
+            self.status.setText("Ready to migrate after source snapshots are available.")
+        def _migrate(self):
+            if not self.scan: return self._error("Scan a valid addons folder first.")
+            self._start(MigrationEngine().migrate, Path(self.input_edit.text()), Path(self.output_edit.text()), int(self.source_box.currentText()), int(self.target_box.currentText()), False, None, None, callback=self._migration_done)
+        def _migration_done(self, result):
+            self.status.setText(f"Migration completed: {len(result.changes)} change(s)"); self.open_btn.setEnabled(True); self.details.setPlainText(str(result.metadata_path))
+        def _start(self, operation, *args, callback=None):
+            self.progress.show(); self.analyze_btn.setEnabled(False); self.migrate_btn.setEnabled(False)
+            self.thread = QThread(self); worker = Worker(operation, *args); worker.moveToThread(self.thread); self.thread.started.connect(worker.run); worker.done.connect(callback or (lambda _: None)); worker.failed.connect(self._error); worker.done.connect(self._finish); worker.failed.connect(self._finish); self.thread.start()
+        def _finish(self, *_): self.progress.hide(); self.analyze_btn.setEnabled(True); self.migrate_btn.setEnabled(True); self.thread.quit()
+        def _error(self, message): QMessageBox.critical(self, "Odoo Addon Migrator", message); self.status.setText("Operation failed. See the error dialog for details.")
+        def _open_output(self): os.startfile(self.output_edit.text())
 
-        def run_migration(self):
-            try:
-                src = int(self.source_box.currentText()); dst = int(self.target_box.currentText())
-                input_root = Path(self.addons_edit.text())
-                output_root = Path(self.output_edit.text())
-                result = MigrationEngine().migrate(input_root, output_root, src, dst)
-                self.log.append(f"✓ Created: {result.output}")
-                self.log.append(f"Applied {len(result.changes)} safe change(s).")
-            except Exception as exc:
-                QMessageBox.critical(self, "Migration error", str(exc))
-
-    app = QApplication(sys.argv)
-    window = MainWindow(); window.show()
-    sys.exit(app.exec())
+    app = QApplication(sys.argv); window = MainWindow(); window.show(); sys.exit(app.exec())
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
