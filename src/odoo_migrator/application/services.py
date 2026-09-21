@@ -38,7 +38,8 @@ class AnalysisService:
 
 
 class MigrationService:
-    def migrate(self, root: Path, output: Path, analysis: AnalysisResult) -> MigrationResult:
+    def migrate(self, root: Path, output: Path, analysis: AnalysisResult, dry_run: bool = False) -> MigrationResult:
         return MigrationEngine().migrate(root, output, analysis.plan.source, analysis.plan.target,
+                                         dry_run=dry_run,
                                          source_snapshot=analysis.source_snapshot,
                                          target_snapshot=analysis.target_snapshot)

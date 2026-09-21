@@ -9,6 +9,7 @@ from odoo_migrator.sources.indexer import OdooIndex
 class Severity(str, Enum):
     INFO = "info"
     WARNING = "warning"
+    REVIEW_REQUIRED = "review_required"
     BLOCKER = "blocker"
 
 
@@ -50,7 +51,7 @@ def compare_custom_to_target(custom: OdooIndex, source: OdooIndex, target: OdooI
             for method in sorted(custom_model.methods & old.methods):
                 if method not in new.methods:
                     findings.append(Finding(
-                        Severity.WARNING, "method.missing_target", module_name,
+                        Severity.REVIEW_REQUIRED, "method.missing_target", module_name,
                         f"Override candidate '{model_name}.{method}()' exists in source Odoo but not target. Review migration."
                     ))
 

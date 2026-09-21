@@ -14,7 +14,7 @@ from odoo_migrator.analysis.project import scan_custom_addons
 from odoo_migrator.analysis.compat import compare_custom_to_target
 from odoo_migrator.migrations.engine import MigrationEngine
 from odoo_migrator.validation import validate_project
-from odoo_migrator.application.services import AnalysisService
+from odoo_migrator.application.services import AnalysisService, MigrationService
 
 app = typer.Typer(help="Local source-aware Odoo custom-addon migration assistant.")
 source_app = typer.Typer(help="Manage local official Odoo Community source snapshots.")
@@ -78,7 +78,8 @@ def migrate(
     target: int=typer.Option(..., "--to"),
     dry_run: bool=typer.Option(False, "--dry-run"),
 ):
-    result = MigrationEngine().migrate(addons, output, source, target, dry_run=dry_run)
+    analysis = AnalysisService().analyze(addons, source, target)
+    result = MigrationService().migrate(addons, output, analysis, dry_run=dry_run)
     console.print(f"[bold]Path:[/bold] {result.plan.path_label}")
     console.print(f"[bold]Changes:[/bold] {len(result.changes)}")
     for change in result.changes:

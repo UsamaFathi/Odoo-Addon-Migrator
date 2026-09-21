@@ -86,6 +86,7 @@ def main() -> None:
             if path: edit.setText(path)
         def _set_input(self, path): self.input_edit.setText(path)
         def _folder_changed(self):
+            self.analysis = None; self.migrate_btn.setEnabled(False)
             path = Path(self.input_edit.text())
             if not path.is_dir(): self.status.setText("Select a valid folder containing Odoo addons."); return
             self.status.setText("Scanning addons…"); self._start(scan_custom_addons, path, self._scan_done)
@@ -102,10 +103,12 @@ def main() -> None:
             else: self.status.setText("Addons detected. Select source and target versions.")
             self._refresh_path()
         def _refresh_targets(self):
+            self.analysis = None; self.migrate_btn.setEnabled(False)
             source = int(self.source_box.currentText()); current = self.target_box.currentText(); self.target_box.clear(); self.target_box.addItems([str(v) for v in range(source + 1, 20)])
             if current in [self.target_box.itemText(i) for i in range(self.target_box.count())]: self.target_box.setCurrentText(current)
             self._refresh_path()
         def _refresh_path(self):
+            self.analysis = None; self.migrate_btn.setEnabled(False)
             if not self.target_box.currentText(): return
             plan = build_plan(int(self.source_box.currentText()), int(self.target_box.currentText())); self.path_label.setText(plan.path_label)
             if self.input_edit.text(): self.output_edit.setText(str(Path(self.input_edit.text()).parent / f"{Path(self.input_edit.text()).name}_{plan.target}"))
@@ -114,8 +117,9 @@ def main() -> None:
             self._start(AnalysisService().analyze, Path(self.input_edit.text()), int(self.source_box.currentText()), int(self.target_box.currentText()), callback=self._analysis_done)
         def _analysis_done(self, result):
             self.analysis = result
-            counts = {level: sum(1 for item in result.findings if item.severity.value == level) for level in ("blocker", "warning", "review")}
-            self.status.setText(f"Analysis complete • {counts['blocker']} blockers • {counts['warning']} warnings • {counts['review']} review items")
+            counts = {level: sum(1 for item in result.findings if item.severity.value == level) for level in ("blocker", "warning", "review_required")}
+            self.migrate_btn.setEnabled(True)
+            self.status.setText(f"Analysis complete • {counts['blocker']} blockers • {counts['warning']} warnings • {counts['review_required']} review items")
             self.details.setPlainText("\n".join(f"{item.severity.value.upper()}: {item.module} — {item.message}" for item in result.findings) or "No compatibility findings.")
         def _migrate(self):
             if not self.analysis: return self._error("Analyze the project before migration.")
