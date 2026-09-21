@@ -1,4 +1,4 @@
-# Architecture v0.1
+# Architecture v1.0 release candidate
 
 ## Principle
 

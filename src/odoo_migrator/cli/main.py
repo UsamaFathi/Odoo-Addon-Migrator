@@ -98,7 +98,7 @@ def analyze(
         table.add_row(item.severity.value, item.code, item.module, item.message)
     console.print(table)
     if not findings:
-        console.print("[green]No issues found by the current v0.1 checks.[/green]")
+        console.print("[green]No issues found by the current static checks.[/green]")
 
 
 @app.command()

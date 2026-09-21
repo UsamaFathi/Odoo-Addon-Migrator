@@ -1,56 +1,73 @@
-# Odoo Addon Migrator — v0.1 foundation
+# Odoo Addon Migrator
 
-A local-first developer tool for analysing and migrating **custom Odoo addons** between supported major versions.
+Odoo Addon Migrator is an independent, local-first desktop and CLI assistant for moving custom addons upward across Odoo 14–19. It composes adjacent, source-aware migration packs and keeps the original addon directory untouched by default.
 
-## Product rules
+## Desktop workflow
 
-- Source versions: **14.0 → 19.0**.
-- Target can be **any supported version higher than source**.
-- Multi-hop migrations are planned automatically, e.g. `15 → 18` becomes `15 → 16 → 17 → 18`.
-- The original custom addon directory is never modified by default.
-- Official Odoo Community source is cached locally from `https://github.com/odoo/odoo.git` and indexed per version.
-- Each source cache records the exact Git commit used, so reports are reproducible.
-- Enterprise source is not downloaded or redistributed; a later connector can index a developer-provided local Enterprise checkout.
+Install the Windows application or run `odoo-migrator-ui`, choose a `custom_addons` folder, review the detected source version and registry-provided target versions, then analyze, review findings, migrate to a separate folder, validate statically, and open the report or diff.
 
-## What v0.1 already contains
+The desktop UI and CLI use the same application services. Long operations run in workers, and the GUI reports blockers, review-required findings, warnings, automatic fixes, source commits, and validation status separately.
 
-- Version validation and migration-path planner.
-- Official Community source manager for Odoo 14.0–19.0.
-- Source snapshot metadata with branch + commit hash.
-- Odoo source indexer for modules, manifests, models, fields, methods and XML IDs.
-- Custom-addon scanner.
-- First compatibility checks: dependencies, inherited models, removed/renamed-method candidates.
-- Migration engine with composable transition rules.
-- Safe manifest-version rule as the first example transformation.
-- CLI.
-- PySide6 desktop shell.
-- Unit tests for planner and safe-copy behaviour.
+## Supported versions
 
-## CLI quick start
+Production adjacent packs are available for:
+
+```text
+14 → 15 → 16 → 17 → 18 → 19
+```
+
+Any upward path through Odoo 19 is composed from those adjacent packs. There is no Odoo 20 support.
+
+## Trust and validation
+
+Official Odoo Community snapshots are pinned centrally for reproducible analysis. Enterprise source is never downloaded or redistributed. Static analysis and static validation do not prove runtime compatibility; installation, database, browser, and business-workflow testing remain separate responsibilities.
+
+Automatic changes are intentionally conservative. Blockers stop migration, while review-required findings remain visible for human decisions. The generated output contains `.odoo_migrator_run.json`, `migration_report.html`, and `migration.diff`.
+
+## Developer setup
 
 ```bash
 python -m venv .venv
-# Windows: .venv\\Scripts\\activate
+# Windows: .venv\Scripts\activate
 # Linux/macOS: source .venv/bin/activate
-pip install -e ".[dev]"
-
-odoo-migrator plan --from 15 --to 18
-odoo-migrator source ensure 18
-odoo-migrator source info 18
-odoo-migrator analyze ./custom_addons --from 15 --to 18
+python -m pip install -e ".[dev]"
+python -m pytest -q
 ```
 
-Desktop UI:
+For the desktop shell:
 
 ```bash
-pip install -e ".[desktop]"
+python -m pip install -e ".[desktop]"
 odoo-migrator-ui
 ```
 
-## Source-aware design
+The CLI remains available for automation:
 
-The tool does not treat migration as blind regex replacement. It compares the custom code against indexes generated from the actual Odoo source checkout used for the selected source and target versions. A later validation layer can boot the target version (e.g. via Docker) and install migrated modules in an empty database.
+```bash
+odoo-migrator plan --from 14 --to 19
+odoo-migrator source ensure 18
+odoo-migrator source info 18
+odoo-migrator analyze ./custom_addons --from 16 --to 19
+odoo-migrator migrate ./custom_addons ./custom_addons_19 --from 16 --to 19
+```
 
-## Important
+## Windows packaging
 
-A successful static migration is **not** a guarantee of runtime correctness. The app should only show stronger confidence after installation/runtime tests also pass.
+On Windows, install Python, Git for Windows, and the project build extras. Then run:
+
+```powershell
+.\scripts\build_windows.ps1
+.\scripts\build_installer.ps1  # requires Inno Setup
+```
+
+The reproducible PyInstaller onedir output is `dist\OdooAddonMigrator\OdooAddonMigrator.exe`. The installer is `dist\OdooAddonMigrator_Setup.exe` when Inno Setup is available. The application can still analyze cached sources offline; first-time source acquisition requires network access.
+
+## Cache and logs
+
+Source caches are stored under `%USERPROFILE%\.odoo-addon-migrator\sources`. Desktop logs are stored under `%LOCALAPPDATA%\OdooAddonMigrator\logs`. The About dialog provides an Open Logs Folder action.
+
+## Troubleshooting
+
+See [USER_GUIDE.md](docs/USER_GUIDE.md), [WINDOWS_INSTALL.md](docs/WINDOWS_INSTALL.md), and [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Common issues are a missing Git executable, an unavailable source snapshot, mixed addon manifest versions, a pre-existing output folder, or blocker findings.
+
+Independent migration utility. Not affiliated with Odoo S.A.
