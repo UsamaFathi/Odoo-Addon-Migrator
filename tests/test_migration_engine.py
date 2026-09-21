@@ -35,3 +35,16 @@ def test_engine_rejects_nested_output(tmp_path: Path):
     import pytest
     with pytest.raises(ValueError, match="inside the input"):
         MigrationEngine().migrate(src, src / "migrated", 15, 16)
+
+
+def test_engine_rejects_internal_symlink(tmp_path: Path):
+    src = tmp_path / "addons"; (src / "demo").mkdir(parents=True)
+    (src / "demo" / "__manifest__.py").write_text("{'name': 'Demo'}\n")
+    linked = src / "linked.txt"
+    import pytest
+    try:
+        linked.symlink_to(src / "demo" / "__manifest__.py")
+    except OSError:
+        pytest.skip("symbolic links unavailable in this Windows environment")
+    with pytest.raises(ValueError, match="symbolic links"):
+        MigrationEngine().migrate(src, tmp_path / "out", 15, 16)

@@ -14,6 +14,7 @@ from odoo_migrator.analysis.project import scan_custom_addons
 from odoo_migrator.analysis.compat import compare_custom_to_target
 from odoo_migrator.migrations.engine import MigrationEngine
 from odoo_migrator.validation import validate_project
+from odoo_migrator.application.services import AnalysisService
 
 app = typer.Typer(help="Local source-aware Odoo custom-addon migration assistant.")
 source_app = typer.Typer(help="Manage local official Odoo Community source snapshots.")
@@ -23,8 +24,8 @@ console = Console()
 
 @app.command()
 def plan(
-    source: int = typer.Option(..., "--from"),
-    target: int = typer.Option(..., "--to"),
+    source: int=typer.Option(..., "--from"),
+    target: int=typer.Option(..., "--to"),
 ):
     p = build_plan(source, target)
     console.print(f"[bold]Migration path:[/bold] {p.path_label}")
@@ -33,7 +34,7 @@ def plan(
 
 
 @source_app.command("ensure")
-def source_ensure(version: int, refresh: bool = False):
+def source_ensure(version: int, refresh: bool=False):
     snap = SourceManager().ensure(version, refresh=refresh)
     console.print(f"[green]Ready[/green] Odoo {snap.branch}")
     console.print(f"Path: {snap.path}")
@@ -51,29 +52,16 @@ def source_info(version: int):
 @app.command()
 def analyze(
     addons: Path,
-    source: int = typer.Option(..., "--from"),
-    target: int = typer.Option(..., "--to"),
+    source: int=typer.Option(..., "--from"),
+    target: int=typer.Option(..., "--to"),
 ):
-    plan = build_plan(source, target)
-    manager = SourceManager()
-    src_snap = manager.snapshot(source)
-    dst_snap = manager.snapshot(target)
-    if not src_snap or not dst_snap:
-        console.print("[red]Both source and target Odoo snapshots must be cached first.[/red]")
-        console.print(f"Run: odoo-migrator source ensure {source}")
-        console.print(f"Run: odoo-migrator source ensure {target}")
-        raise typer.Exit(2)
-
-    custom = scan_custom_addons(addons)
-    indexer = SourceIndexer()
-    with console.status(f"Indexing Odoo {source} source..."):
-        src_index = indexer.index(src_snap.path)
-    with console.status(f"Indexing Odoo {target} source..."):
-        dst_index = indexer.index(dst_snap.path)
-
-    findings = compare_custom_to_target(custom.index, src_index, dst_index)
-    console.print(f"[bold]Path:[/bold] {plan.path_label}")
-    console.print(f"[bold]Custom modules:[/bold] {custom.module_count}")
+    with console.status("Preparing official Odoo snapshots and indexes..."):
+        result = AnalysisService().analyze(addons, source, target)
+    findings = result.findings
+    console.print(f"[bold]Path:[/bold] {result.plan.path_label}")
+    console.print(f"[bold]Custom modules:[/bold] {result.scan.module_count}")
+    console.print(f"[bold]Source commit:[/bold] {result.source_snapshot.commit}")
+    console.print(f"[bold]Target commit:[/bold] {result.target_snapshot.commit}")
     table = Table("Severity", "Code", "Module", "Message")
     for item in findings:
         table.add_row(item.severity.value, item.code, item.module, item.message)
@@ -86,9 +74,9 @@ def analyze(
 def migrate(
     addons: Path,
     output: Path,
-    source: int = typer.Option(..., "--from"),
-    target: int = typer.Option(..., "--to"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    source: int=typer.Option(..., "--from"),
+    target: int=typer.Option(..., "--to"),
+    dry_run: bool=typer.Option(False, "--dry-run"),
 ):
     result = MigrationEngine().migrate(addons, output, source, target, dry_run=dry_run)
     console.print(f"[bold]Path:[/bold] {result.plan.path_label}")

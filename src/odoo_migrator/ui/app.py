@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from odoo_migrator.analysis.project import scan_custom_addons
+from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.core.planner import build_plan
 from odoo_migrator.migrations.engine import MigrationEngine
 
@@ -43,7 +44,7 @@ def main() -> None:
     class MainWindow(QMainWindow):
         def __init__(self):
             super().__init__(); self.setWindowTitle("Odoo Addon Migrator"); self.resize(980, 720)
-            self.scan = None; self.analysis = None; self.thread = None
+            self.scan = None; self.analysis = None; self.thread = None; self.worker = None; self.busy = False
             self.input_edit = DropLineEdit(); self.output_edit = QLineEdit()
             self.source_box = QComboBox(); self.source_box.addItems([str(v) for v in range(14, 20)])
             self.target_box = QComboBox(); self.module_list = QListWidget()
@@ -110,17 +111,22 @@ def main() -> None:
             if self.input_edit.text(): self.output_edit.setText(str(Path(self.input_edit.text()).parent / f"{Path(self.input_edit.text()).name}_{plan.target}"))
         def _analyze(self):
             if not self.scan: return self._error("Scan a valid addons folder first.")
-            self.details.setPlainText("Analysis requires cached official source snapshots for the selected versions. Use the CLI source ensure command or Settings in the next desktop milestone.")
-            self.status.setText("Ready to migrate after source snapshots are available.")
+            self._start(AnalysisService().analyze, Path(self.input_edit.text()), int(self.source_box.currentText()), int(self.target_box.currentText()), callback=self._analysis_done)
+        def _analysis_done(self, result):
+            self.analysis = result
+            counts = {level: sum(1 for item in result.findings if item.severity.value == level) for level in ("blocker", "warning", "review")}
+            self.status.setText(f"Analysis complete • {counts['blocker']} blockers • {counts['warning']} warnings • {counts['review']} review items")
+            self.details.setPlainText("\n".join(f"{item.severity.value.upper()}: {item.module} — {item.message}" for item in result.findings) or "No compatibility findings.")
         def _migrate(self):
-            if not self.scan: return self._error("Scan a valid addons folder first.")
-            self._start(MigrationEngine().migrate, Path(self.input_edit.text()), Path(self.output_edit.text()), int(self.source_box.currentText()), int(self.target_box.currentText()), False, None, None, callback=self._migration_done)
+            if not self.analysis: return self._error("Analyze the project before migration.")
+            self._start(MigrationService().migrate, Path(self.input_edit.text()), Path(self.output_edit.text()), self.analysis, callback=self._migration_done)
         def _migration_done(self, result):
             self.status.setText(f"Migration completed: {len(result.changes)} change(s)"); self.open_btn.setEnabled(True); self.details.setPlainText(str(result.metadata_path))
         def _start(self, operation, *args, callback=None):
-            self.progress.show(); self.analyze_btn.setEnabled(False); self.migrate_btn.setEnabled(False)
-            self.thread = QThread(self); worker = Worker(operation, *args); worker.moveToThread(self.thread); self.thread.started.connect(worker.run); worker.done.connect(callback or (lambda _: None)); worker.failed.connect(self._error); worker.done.connect(self._finish); worker.failed.connect(self._finish); self.thread.start()
-        def _finish(self, *_): self.progress.hide(); self.analyze_btn.setEnabled(True); self.migrate_btn.setEnabled(True); self.thread.quit()
+            if self.busy: return self._error("Another operation is still running.")
+            self.busy = True; self.progress.show(); self.analyze_btn.setEnabled(False); self.migrate_btn.setEnabled(False)
+            self.thread = QThread(self); self.worker = Worker(operation, *args); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.done.connect(callback or (lambda _: None)); self.worker.failed.connect(self._error); self.worker.done.connect(self._finish); self.worker.failed.connect(self._finish); self.thread.finished.connect(self.worker.deleteLater); self.thread.finished.connect(self.thread.deleteLater); self.thread.start()
+        def _finish(self, *_): self.progress.hide(); self.analyze_btn.setEnabled(True); self.migrate_btn.setEnabled(True); self.busy = False; self.thread.quit(); self.thread = None; self.worker = None
         def _error(self, message): QMessageBox.critical(self, "Odoo Addon Migrator", message); self.status.setText("Operation failed. See the error dialog for details.")
         def _open_output(self): os.startfile(self.output_edit.text())
 

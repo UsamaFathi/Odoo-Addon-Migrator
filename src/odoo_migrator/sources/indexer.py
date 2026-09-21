@@ -86,12 +86,14 @@ class SourceIndexer:
 
     def index(self, root: Path, source_commit: str | None = None, cache_dir: Path | None = None) -> OdooIndex:
         root = Path(root).resolve()
-        cache_key = hashlib.sha256(f"{root}|{source_commit}|{INDEX_SCHEMA_VERSION}".encode()).hexdigest()[:24]
+        fingerprint = source_commit or self._project_fingerprint(root)
+        cache_key = hashlib.sha256(f"{root}|{fingerprint}|{INDEX_SCHEMA_VERSION}".encode()).hexdigest()[:24]
         cache_path = Path(cache_dir or Path.home() / ".odoo-addon-migrator" / "indexes") / f"{cache_key}.json"
         if cache_path.exists():
             data = json.loads(cache_path.read_text(encoding="utf-8"))
             if data.get("schema_version") == INDEX_SCHEMA_VERSION and data.get("source_commit") == source_commit:
-                return self._from_json(data)
+                if source_commit is not None or data.get("project_fingerprint") == fingerprint:
+                    return self._from_json(data)
         modules: dict[str, ModuleInfo] = {}
         for manifest in root.rglob("__manifest__.py"):
             if ".git" in manifest.parts:
@@ -111,7 +113,18 @@ class SourceIndexer:
             modules[module.name] = module
         result = OdooIndex(root=str(root), modules=modules, source_commit=source_commit)
         result.save(cache_path)
+        payload = json.loads(cache_path.read_text(encoding="utf-8")); payload["project_fingerprint"] = fingerprint
+        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return result
+
+    @staticmethod
+    def _project_fingerprint(root: Path) -> str:
+        digest = hashlib.sha256()
+        for path in sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts):
+            digest.update(path.relative_to(root).as_posix().encode())
+            digest.update(str(path.stat().st_size).encode())
+            digest.update(str(path.stat().st_mtime_ns).encode())
+        return digest.hexdigest()
 
     @staticmethod
     def _manifest(path: Path) -> dict:

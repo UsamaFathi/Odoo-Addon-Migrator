@@ -43,6 +43,11 @@ class MigrationEngine:
             raise ValueError("Input directory cannot be inside the output directory.")
         if any(path.is_symlink() for path in (input_root, output_root)):
             raise ValueError("Input and output directories must not be symbolic links.")
+        internal_links = [path for path in input_root.rglob("*") if path.is_symlink()]
+        if internal_links:
+            raise ValueError(f"Input contains symbolic links, which are not migrated: {internal_links[0]}")
+        if not output_root.parent.is_dir():
+            raise ValueError(f"Output parent directory does not exist: {output_root.parent}")
         plan = build_plan(source, target)
 
         work_root = input_root
