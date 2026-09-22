@@ -311,6 +311,7 @@ def test_desktop_workflow_uses_real_services_and_preserves_input(qapp, tmp_path:
 def test_theme_does_not_paint_every_qwidget_background():
     from odoo_migrator.ui.theme import APP_STYLE
     assert "QMainWindow, QWidget { background" not in APP_STYLE
+    assert "QMainWindow { background-color:" in APP_STYLE
     assert "QWidget#appRoot" in APP_STYLE
     assert "QLabel { background-color: transparent; }" in APP_STYLE
     assert "QLineEdit, QComboBox { min-height: 24px; }" in APP_STYLE
