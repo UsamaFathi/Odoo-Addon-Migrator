@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication
 from odoo_migrator.analysis.compat import Finding, Severity
 from odoo_migrator.analysis.project import scan_custom_addons
 from odoo_migrator.ui.main_window import MainWindow
+import odoo_migrator.ui.settings as settings_module
 from odoo_migrator.ui.models.application_state import ApplicationState, WorkflowPhase, suggested_output_path
 from odoo_migrator.ui.models.findings_model import FindingsModel
 from odoo_migrator.ui.pages.project import ProjectPage
@@ -30,8 +31,16 @@ from odoo_migrator.sources.registry import SourceMode, SourceSnapshot
 @pytest.fixture(scope="module")
 def qapp():
     app = QApplication.instance() or QApplication([])
-    QSettings("OdooAddonMigrator", "OdooAddonMigrator").clear()
     return app
+
+
+@pytest.fixture(autouse=True)
+def isolated_desktop_settings(monkeypatch, tmp_path: Path):
+    settings_path = tmp_path / "gui-test.ini"
+    settings = QSettings(str(settings_path), QSettings.IniFormat)
+    monkeypatch.setattr(settings_module, "production_settings", lambda: settings)
+    yield
+    settings.clear(); settings.sync()
 
 
 def _addon(root: Path, name: str, version: str) -> None:
@@ -129,7 +138,37 @@ def test_analyze_requires_confirmation_when_sources_are_missing(qapp, tmp_path: 
     window._analyze()
     assert window.stack.currentIndex() == 0
     window.close()
-    QSettings("OdooAddonMigrator", "OdooAddonMigrator").clear()
+
+
+def test_pytest_paths_never_enter_production_settings(qapp, tmp_path: Path):
+    production = QSettings("OdooAddonMigrator", "OdooAddonMigrator")
+    production.remove("last_path")
+    root = tmp_path / "custom_addons"; _addon(root, "demo", "18.0.1.0.0")
+    window = MainWindow()
+    window.project_page.path_picker.edit.blockSignals(True); window.project_page.path_picker.setPath(root); window.project_page.path_picker.edit.blockSignals(False)
+    window.state.reset_project(root); window.state.set_scan(scan_custom_addons(root)); window.close()
+    assert "pytest-of-" not in str(production.value("last_path", ""))
+    assert not production.value("last_path", "")
+
+
+def test_stale_temp_last_path_is_not_restored(qapp, tmp_path: Path):
+    settings = QSettings(str(tmp_path / "stale.ini"), QSettings.IniFormat)
+    settings.setValue("last_path", str(tmp_path / "pytest-of-nami" / "custom_addons")); settings.sync()
+    window = MainWindow(settings=settings_module.DesktopSettings(settings))
+    assert window.project_page.path_picker.edit.text() == ""
+    window.close()
+
+
+def test_rc2_shell_is_usable_at_standard_windows_size(qapp):
+    window = MainWindow()
+    window.resize(1366, 768); window.show(); qapp.processEvents()
+    assert window.steps.isVisible()
+    assert window.project_page.analyze_button.isVisible()
+    assert window.stack.currentIndex() == 0
+    assert window.project_page.analyze_button.geometry().bottom() <= window.project_page.height()
+    screenshot = window.grab()
+    assert screenshot.width() > 900 and screenshot.height() > 500
+    window.close()
 
 
 def test_finding_location_is_project_safe(qapp, tmp_path: Path):

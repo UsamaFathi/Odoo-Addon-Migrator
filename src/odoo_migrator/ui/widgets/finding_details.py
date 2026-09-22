@@ -54,7 +54,9 @@ class FindingDetails(QWidget):
             self.problem.clear(); self.action.clear(); self.open_button.setEnabled(False); return
         for name, field in self.fields.items():
             value = getattr(finding, name, None)
-            field.setText(getattr(value, "value", None) or str(value or "—"))
+            if name == "severity":
+                value = {"blocker": "BLOCKER", "review_required": "REVIEW", "warning": "WARNING"}.get(getattr(value, "value", value), str(value))
+            field.setText(str(value or "—"))
         self.problem.setPlainText(finding.message)
         self.action.setPlainText(finding.suggested_action or "Review the source and target behavior manually.")
         self.open_button.setEnabled(self._safe_path() is not None)

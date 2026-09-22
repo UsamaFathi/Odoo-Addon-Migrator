@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtGui import QColor
 
 
 class FindingsModel(QAbstractTableModel):
     headers = ("Severity", "Migration Step", "Addon", "Category", "File", "Line", "Object", "Rule", "Message")
+    severity_labels = {"blocker": "BLOCKER", "review_required": "REVIEW", "warning": "WARNING"}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,12 +32,18 @@ class FindingsModel(QAbstractTableModel):
         return None
 
     def data(self, index, role=Qt.DisplayRole):  # noqa: N802
-        if not index.isValid() or role != Qt.DisplayRole:
+        if not index.isValid():
             return None
         finding = self._rows[index.row()]
+        if role == Qt.BackgroundRole and index.column() == 0:
+            return {"blocker": QColor("#FEF3F2"), "review_required": QColor("#FFFAEB"), "warning": QColor("#EFF8FF")}.get(finding.severity.value)
+        if role == Qt.ForegroundRole and index.column() == 0:
+            return {"blocker": QColor("#B42318"), "review_required": QColor("#B54708"), "warning": QColor("#175CD3")}.get(finding.severity.value)
+        if role != Qt.DisplayRole:
+            return None
         values = (
-            finding.severity.value, finding.migration_step or "", finding.module,
-            finding.concern, finding.path or "", finding.line if finding.line is not None else -1, finding.object_name or "",
+            self.severity_labels.get(finding.severity.value, finding.severity.value.upper()), finding.migration_step or "", finding.module,
+            finding.concern, finding.path or "", finding.line if finding.line is not None else "", finding.object_name or "",
             finding.rule_id or "", finding.message,
         )
         return values[index.column()]
@@ -75,7 +83,7 @@ class FindingsModel(QAbstractTableModel):
 
     def _sort_key(self, finding):
         values = (
-            finding.severity.value, finding.migration_step or "", finding.module,
+            self.severity_labels.get(finding.severity.value, finding.severity.value.upper()), finding.migration_step or "", finding.module,
             finding.concern, finding.path or "", finding.line if finding.line is not None else -1,
             finding.object_name or "", finding.rule_id or "", finding.message,
         )
