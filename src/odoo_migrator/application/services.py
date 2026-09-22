@@ -75,6 +75,18 @@ class AnalysisService:
         self.registry = registry or default_registry()
         self.source_manager = source_manager
 
+    def source_status(self, source: int, target: int, manager: SourceManager | None = None) -> dict[int, SourceSnapshot | None]:
+        """Read cached snapshot metadata without performing Git/network work."""
+        manager = manager or self.source_manager or SourceManager()
+        snapshot = getattr(manager, "snapshot", None)
+        statuses = {}
+        for version in range(source, target + 1):
+            value = snapshot(version) if snapshot else None
+            if value is not None and value.source_mode.value == "verified_snapshot" and value.expected_commit != value.actual_commit:
+                value = None
+            statuses[version] = value
+        return statuses
+
     def analyze(self, root: Path, source: int, target: int, manager: SourceManager | None = None,
                 progress: Callable[[str, int], None] | None = None) -> AnalysisResult:
         def report(stage: str, percent: int) -> None:
@@ -86,20 +98,27 @@ class AnalysisService:
         plan = build_plan(source, target)
         self.registry.require_plan(plan.steps)
         report("Scanning custom addons", 8)
+        report("Checking local Odoo sources", 10)
         scan = scan_custom_addons(root); indexer = SourceIndexer()
         snapshots = {}
         for offset, version in enumerate(range(source, target + 1)):
-            report(f"Preparing Odoo {version} source", 12 + offset * 6)
+            snapshot = getattr(manager, "snapshot", None)
+            cached = snapshot(version) if snapshot else None
+            if cached is None:
+                report(f"Downloading Odoo {version} verified snapshot", 12 + offset * 6)
+            else:
+                report(f"Odoo {version} verified snapshot ready locally", 12 + offset * 6)
             snapshots[version] = manager.ensure(version)
-        indexes = {
-            version: indexer.index(
+            report(f"Preparing Odoo {version}", 15 + offset * 6)
+        indexes = {}
+        for offset, version in enumerate(snapshots):
+            report(f"Indexing Odoo {version}", 30 + offset * 4)
+            indexes[version] = indexer.index(
                 snapshots[version].path,
                 source_commit=snapshots[version].actual_commit,
                 source_mode=snapshots[version].source_mode.value,
                 source_version=version,
             )
-            for version in snapshots
-        }
         report("Official source indexes ready", 42)
         findings = []; step_results = []; candidates = []; engine = MigrationEngine(self.registry)
         with tempfile.TemporaryDirectory(prefix="odoo-migrator-plan-") as staging:

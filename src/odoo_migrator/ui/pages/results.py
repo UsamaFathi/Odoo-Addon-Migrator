@@ -1,3 +1,5 @@
+import json
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -20,6 +22,19 @@ class ResultsPage(QWidget):
         layout = QVBoxLayout(self); layout.addWidget(QLabel("Migration completed", objectName="sectionTitle")); layout.addWidget(self.summary); layout.addWidget(self.output); layout.addWidget(output); layout.addWidget(self.report); layout.addWidget(self.diff); layout.addWidget(new); layout.addStretch()
 
     def set_result(self, result, analysis) -> None:
-        validation = "Passed" if result.metadata_path and "\"state\": \"passed\"" in result.metadata_path.read_text(encoding="utf-8") else "See report"
-        self.summary.setText(f"Automatic fixes applied: {len(result.changes)}\nManual review items remaining: {len(analysis.review_required)}\nBlockers: {len(analysis.blockers)}\nStatic Validation: {validation}")
+        state = getattr(result, "validation_state", None)
+        issues = getattr(result, "validation_issues", ())
+        if state in (None, "not_run") and result.metadata_path and result.metadata_path.exists():
+            try:
+                metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+                validation = metadata.get("validation", {})
+                state = validation.get("state", "failed")
+                issues = validation.get("issues", ())
+            except (OSError, ValueError, TypeError):
+                state, issues = "failed", ()
+        state = state or "failed"
+        validation = "Passed" if state == "passed" else "Failed"
+        issue_count = len(issues)
+        issue_text = f" ({issue_count} issue(s))" if issue_count else ""
+        self.summary.setText(f"Automatic fixes applied: {len(result.changes)}\nManual review items remaining: {len(analysis.review_required)}\nBlockers: {len(analysis.blockers)}\nStatic Validation: {validation}{issue_text}")
         self.output.setText(f"Output:\n{result.output}")

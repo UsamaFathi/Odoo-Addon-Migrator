@@ -34,8 +34,12 @@ class ApplicationState:
     status: str = "Ready to select a project"
     _extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
-    def begin_operation(self) -> int:
+    def begin_operation(self, operation: str | None = None) -> int:
         self.operation_token += 1
+        if operation == "analysis":
+            self.phase = WorkflowPhase.ANALYZE
+        elif operation == "migration":
+            self.phase = WorkflowPhase.MIGRATE
         return self.operation_token
 
     def reset_project(self, root: Path | None = None) -> None:
@@ -58,7 +62,9 @@ class ApplicationState:
         self.target_version = target
         self.analysis = None
         self.migration = None
-        self.output_root = None
+
+    def set_output_root(self, output: Path | None) -> None:
+        self.output_root = output.resolve() if output else None
 
     def set_analysis(self, analysis: AnalysisResult) -> None:
         self.analysis = analysis
@@ -68,6 +74,7 @@ class ApplicationState:
 
     def set_migration(self, migration: MigrationResult) -> None:
         self.migration = migration
+        self.output_root = migration.output
         self.phase = WorkflowPhase.RESULTS
 
     @property

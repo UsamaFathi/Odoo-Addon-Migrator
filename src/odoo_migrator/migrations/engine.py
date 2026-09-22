@@ -13,7 +13,7 @@ import shutil as _shutil
 from collections.abc import Callable, Iterable
 from odoo_migrator import __version__
 from odoo_migrator.sources.registry import SourceSnapshot
-from odoo_migrator.validation import validate_project
+from odoo_migrator.validation import ValidationItem, validate_project
 
 from odoo_migrator.core.planner import MigrationPlan, build_plan
 from .base import Change, MigrationRule
@@ -28,6 +28,8 @@ class MigrationResult:
     metadata_path: Path | None = None
     report_path: Path | None = None
     diff_path: Path | None = None
+    validation_state: str = "not_run"
+    validation_issues: tuple[ValidationItem, ...] = ()
 
 
 class MigrationEngine:
@@ -92,6 +94,8 @@ class MigrationEngine:
         metadata_path = None
         report_path = None
         diff_path = None
+        validation_state = "not_run"
+        validation_issues: tuple[ValidationItem, ...] = ()
         if not dry_run:
             report("Writing migration metadata and diff", 82)
             diff_path = work_root / "migration.diff"
@@ -128,9 +132,11 @@ class MigrationEngine:
             metadata_path = output_root / ".odoo_migrator_run.json"
             report("Validating migrated output", 92)
             validation = validate_project(output_root)
+            validation_state = "passed" if not validation else "failed"
+            validation_issues = tuple(validation)
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             metadata["validation"] = {
-                "state": "passed" if not validation else "failed",
+                "state": validation_state,
                 "level": 1,
                 "issues": [asdict(item) for item in validation],
             }
@@ -140,7 +146,7 @@ class MigrationEngine:
             diff_path = output_root / "migration.diff"
             report("Migration complete", 100)
         return MigrationResult(output_root if not dry_run else input_root, plan, tuple(changes), metadata_path,
-                               report_path, diff_path)
+                               report_path, diff_path, validation_state, validation_issues)
 
 
 def _relative_files(root: Path) -> set[str]:

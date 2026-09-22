@@ -4,6 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,9 +17,12 @@ from PySide6.QtWidgets import QApplication
 from odoo_migrator.analysis.compat import Finding, Severity
 from odoo_migrator.analysis.project import scan_custom_addons
 from odoo_migrator.ui.main_window import MainWindow
-from odoo_migrator.ui.models.application_state import ApplicationState, suggested_output_path
+from odoo_migrator.ui.models.application_state import ApplicationState, WorkflowPhase, suggested_output_path
 from odoo_migrator.ui.models.findings_model import FindingsModel
 from odoo_migrator.ui.pages.project import ProjectPage
+from odoo_migrator.ui.pages.results import ResultsPage
+from odoo_migrator.ui.widgets.finding_details import FindingDetails
+from odoo_migrator.ui.widgets.source_status import SourceStatus
 from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.sources.registry import SourceMode, SourceSnapshot
 
@@ -62,6 +66,9 @@ def test_registry_driven_project_targets_and_source_19_no_target(qapp):
 def test_application_state_output_and_blocker_policy():
     state = ApplicationState(project_root=Path("C:/addons"), target_version=19)
     assert suggested_output_path(Path("C:/addons"), 19) == Path("C:/addons_19")
+    state.begin_operation("analysis")
+    assert state.phase is WorkflowPhase.ANALYZE
+    state.set_output_root(Path("C:/addons_19"))
     finding = Finding(Severity.BLOCKER, "model.removed", "sale", "blocked")
     assert not state.can_migrate
     assert finding.severity is Severity.BLOCKER
@@ -77,6 +84,70 @@ def test_findings_filter_by_step_and_search(qapp):
     assert model.rowCount() == 1 and model.finding(0).module == "stock"
     model.setFilter(step="All", search="asset")
     assert model.rowCount() == 1
+
+
+def test_findings_category_filter_and_numeric_sorting(qapp):
+    from odoo_migrator.ui.models.findings_model import FindingsModel
+    model = FindingsModel()
+    model.setFindings([
+        Finding(Severity.WARNING, "python.method", "sale", "late", line=20, migration_step="18_to_19"),
+        Finding(Severity.BLOCKER, "security.model", "base", "early", line=3, migration_step="17_to_18"),
+    ])
+    model.setFilter(category="method")
+    assert model.rowCount() == 1
+    model.setFilter(category="All")
+    model.sort(5)
+    assert model.finding(0).line == 3
+    model.sort(5, 1)
+    assert model.finding(0).line == 20
+
+
+def test_source_status_distinguishes_cached_and_missing(qapp, tmp_path: Path):
+    status = SourceStatus()
+    cached = SourceSnapshot(18, "18.0", "controlled://odoo", "a" * 40, tmp_path, SourceMode.VERIFIED_SNAPSHOT, "a" * 40)
+    status.set_versions([17, 18], {17: None, 18: cached})
+    text = status.label.text()
+    assert "Odoo 17  •  Download required" in text
+    assert "Odoo 18  •  Ready locally" in text
+    assert "Verified Snapshot" in text
+
+
+def test_analyze_requires_confirmation_when_sources_are_missing(qapp, tmp_path: Path, monkeypatch):
+    class _StatusOnly:
+        def source_status(self, source, target):
+            return {version: None for version in range(source, target + 1)}
+
+        def analyze(self, *args, **kwargs):
+            raise AssertionError("analysis must not start after cancellation")
+
+    root = tmp_path / "custom"; _addon(root, "demo", "18.0.1.0.0")
+    window = MainWindow(analysis_service=_StatusOnly(), migration_service=MigrationService())
+    window.project_page.path_picker.edit.blockSignals(True); window.project_page.path_picker.setPath(root); window.project_page.path_picker.edit.blockSignals(False)
+    window.state.reset_project(root); window.state.set_scan(scan_custom_addons(root))
+    window.project_page.set_source_versions([18, 19], 18); window.project_page.set_targets((19,), 19)
+    monkeypatch.setattr(window, "_confirm_source_download", lambda versions: False)
+    window._analyze()
+    assert window.stack.currentIndex() == 0
+    window.close()
+    QSettings("OdooAddonMigrator", "OdooAddonMigrator").clear()
+
+
+def test_finding_location_is_project_safe(qapp, tmp_path: Path):
+    module = tmp_path / "sale"; module.mkdir(); file_path = module / "models.py"; file_path.write_text("# test", encoding="utf-8")
+    details = FindingDetails(); details.set_project_root(tmp_path)
+    details.setFinding(Finding(Severity.WARNING, "python.method", "sale", "x", path="models.py"))
+    assert details._safe_path() == file_path.resolve()
+    details.setFinding(Finding(Severity.WARNING, "python.method", "sale", "x", path="../../outside.py"))
+    assert details._safe_path() is None
+
+
+def test_results_use_structured_validation_state(qapp, tmp_path: Path):
+    metadata = tmp_path / ".odoo_migrator_run.json"
+    metadata.write_text('{"validation": {"state": "passed"}}', encoding="utf-8")
+    result = SimpleNamespace(changes=(), output=tmp_path, metadata_path=metadata, validation_state="failed", validation_issues=(object(),))
+    analysis = SimpleNamespace(review_required=(), blockers=())
+    page = ResultsPage(); page.set_result(result, analysis)
+    assert "Static Validation: Failed (1 issue(s))" in page.summary.text()
 
 
 @dataclass
@@ -120,6 +191,7 @@ def test_desktop_workflow_uses_real_services_and_preserves_input(qapp, tmp_path:
     window._analysis_done(analysis_token, analysis)
     output = tmp_path / "custom_addons_19"
     window.project_page.output.setText(str(output))
+    assert window.state.output_root == output.resolve()
     window._migrate()
     deadline = time.time() + 10
     while window.state.migration is None and time.time() < deadline:

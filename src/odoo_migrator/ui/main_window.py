@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 from odoo_migrator import __version__
 from odoo_migrator.application.services import AnalysisService, MigrationService, ProjectScanService
 from odoo_migrator.migrations.registry import default_registry
+from odoo_migrator.sources.manager import SourceManager, SourceManagerError
+from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.ui.models.application_state import ApplicationState
 from odoo_migrator.ui.pages.analysis import AnalysisPage
 from odoo_migrator.ui.pages.migration import MigrationPage
@@ -25,6 +27,14 @@ from odoo_migrator.ui.workers.task_worker import TaskWorker
 
 
 logger = logging.getLogger("odoo_migrator.ui")
+
+
+def _display_version(version: str) -> str:
+    return version.replace("rc", "-rc.") if "rc" in version else version
+
+
+def _display_version(version: str) -> str:
+    return version.replace("rc", "-rc.") if "rc" in version else version
 
 
 def configure_logging() -> Path:
@@ -108,6 +118,8 @@ class MainWindow(QMainWindow):
         self.results_page.openReportRequested.connect(self._open_report)
         self.results_page.openDiffRequested.connect(self._open_diff)
         self.results_page.newProjectRequested.connect(self._new_project)
+        self.project_page.outputChanged.connect(self._output_changed)
+        self.analysis_page.details.openLocation.connect(self._open_finding_location)
         self._refresh_targets()
 
     def _restore_settings(self) -> None:
@@ -147,7 +159,16 @@ class MainWindow(QMainWindow):
             selected_target = self.project_page.selected_target() or targets[0]
             self.project_page.suggest_output(selected_target)
             self.project_page.set_source_requirements(source, selected_target)
+            self._refresh_source_status(source, selected_target)
+            self._output_changed(self.project_page.output.text())
         self.state.set_versions(source, self.project_page.selected_target())
+
+    def _refresh_source_status(self, source: int, target: int) -> None:
+        try:
+            snapshots = self.analysis_service.source_status(source, target)
+        except SourceManagerError:
+            snapshots = None
+        self.project_page.set_source_requirements(source, target, snapshots)
 
     def _source_changed(self, source: int) -> None:
         self.state.set_versions(source, None)
@@ -193,6 +214,14 @@ class MainWindow(QMainWindow):
             self._show_error("No implemented migration target is available from this source version.")
             return
         self.state.set_versions(source, target)
+        try:
+            snapshots = self.analysis_service.source_status(source, target)
+        except SourceManagerError as exc:
+            self._show_error("Unable to inspect the local Odoo source cache.", str(exc))
+            return
+        missing = [version for version, snapshot in snapshots.items() if snapshot is None]
+        if missing and not self._confirm_source_download(missing):
+            return
         self._show_page(1, 1)
         self._start_task("analysis", lambda progress=None: self.analysis_service.analyze(root, source, target, progress=progress), (), self._analysis_done, self.analysis_page.set_busy)
 
@@ -204,6 +233,7 @@ class MainWindow(QMainWindow):
         snapshots = {step.source: step.source_snapshot for step in result.steps}
         snapshots[result.steps[-1].target] = result.steps[-1].target_snapshot if result.steps else result.target_snapshot
         self.project_page.sources.set_versions(list(range(result.plan.source, result.plan.target + 1)), snapshots)
+        self.analysis_page.details.set_project_root(result.scan.root)
         self._log("Analysis completed", source=result.plan.source, target=result.plan.target, findings=len(result.findings))
 
     def _migrate(self) -> None:
@@ -215,6 +245,7 @@ class MainWindow(QMainWindow):
         if output.exists():
             self._show_error("The selected output directory already exists. Choose a different destination.")
             return
+        self.state.set_output_root(output)
         self._show_page(2, 3)
         self.migration_page.set_destination(output)
         self._start_task("migration", lambda progress=None: self.migration_service.migrate(
@@ -238,7 +269,7 @@ class MainWindow(QMainWindow):
             self._show_error("Another operation is still running.")
             return
         self._busy = True
-        token = self.state.begin_operation()
+        token = self.state.begin_operation(name)
         busy_callback(True)
         thread = QThread(self)
         worker = TaskWorker(operation, *args)
@@ -267,7 +298,31 @@ class MainWindow(QMainWindow):
             return
         self.state.last_error = message
         logger.error("Task failed: %s\n%s", message, details)
-        self._show_error(message, details)
+        self._show_error(self._friendly_error(message), details)
+
+    @staticmethod
+    def _friendly_error(message: str) -> str:
+        lowered = message.lower()
+        if "git is required" in lowered or ("git" in lowered and "not found" in lowered):
+            return ("Git for Windows was not found.\n\nOdoo Addon Migrator uses Git to download verified official "
+                    "Odoo Community source snapshots.\n\nInstall Git for Windows and restart the application, "
+                    "or use an existing source cache.")
+        return message
+
+    def _confirm_source_download(self, versions: list[int]) -> bool:
+        names = "\n".join(f"Odoo {version}" for version in versions)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Odoo source files are required")
+        box.setText("Odoo source files are required")
+        box.setInformativeText(
+            f"The following official Community snapshots are not cached:\n\n{names}\n\n"
+            "They will be downloaded from the official Odoo GitHub repository and stored locally.\n\nContinue?"
+        )
+        download = box.addButton("Download and Analyze", QMessageBox.AcceptRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() is download
 
     def _task_finished(self, token: int, busy_callback) -> None:
         if token == self.state.operation_token:
@@ -288,6 +343,9 @@ class MainWindow(QMainWindow):
         if path and path.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
+    def _open_finding_location(self, path: Path | None) -> None:
+        self._open_path(path)
+
     def _open_output(self) -> None:
         self._open_path(self.state.migration.output if self.state.migration else None)
 
@@ -296,6 +354,9 @@ class MainWindow(QMainWindow):
 
     def _open_diff(self) -> None:
         self._open_path(self.state.migration.diff_path if self.state.migration else None)
+
+    def _output_changed(self, value: str) -> None:
+        self.state.set_output_root(Path(value).resolve() if value.strip() else None)
 
     def _new_project(self) -> None:
         self.state.reset_project(None)
@@ -307,6 +368,12 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("About Odoo Addon Migrator")
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel(f"<h2>Odoo Addon Migrator</h2><p>Version {__version__}</p><p>Local source-aware migration assistant for Odoo 14–19.</p><p>Independent migration utility. Not affiliated with Odoo S.A.</p>"))
+        layout.itemAt(0).widget().setText(f"<h2>Odoo Addon Migrator</h2><p>Version {_display_version(__version__)}</p><p>Supported versions: Odoo 14–19</p><p>Verified source mode: default</p><p>Independent migration utility. Not affiliated with Odoo S.A.</p>")
+        project = QPushButton("Open GitHub Project")
+        project.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/UsamaFathi/Odoo-Addon-Migrator")))
+        cache = QPushButton("Open Source Cache Folder")
+        cache.clicked.connect(lambda: self._open_path(SourceManager().cache_root))
+        layout.addWidget(project); layout.addWidget(cache)
         logs = QPushButton("Open Logs Folder")
         logs.clicked.connect(lambda: self._open_path(self._log_dir))
         layout.addWidget(logs)

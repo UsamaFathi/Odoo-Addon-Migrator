@@ -115,6 +115,8 @@ class SourceManager:
         meta = dest / ".odoo_migrator_snapshot.json"
         if not meta.exists():
             return None
+        if not (dest / ".git").exists():
+            return None
         try:
             data = json.loads(meta.read_text(encoding="utf-8"))
             stored_mode = SourceMode(data.get("source_mode", selected.value))
