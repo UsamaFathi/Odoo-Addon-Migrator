@@ -24,6 +24,8 @@ Any upward path through Odoo 19 is composed from those adjacent packs. There is 
 
 Official Odoo Community snapshots are pinned centrally for reproducible analysis. Enterprise source is never downloaded or redistributed. Static analysis and static validation do not prove runtime compatibility; installation, database, browser, and business-workflow testing remain separate responsibilities.
 
+Each required Odoo version can use either a verified downloaded snapshot or a user-selected **Local Exact Source** tree. Local trees are validated from `odoo/release.py` and `addons/`, indexed read-only, and are never fetched, reset, cleaned, or modified. Git commit, branch, origin, and dirty state are recorded when available.
+
 Automatic changes are intentionally conservative. Blockers stop migration, while review-required findings remain visible for human decisions. The generated output contains `.odoo_migrator_run.json`, `migration_report.html`, and `migration.diff`.
 
 ## Developer setup

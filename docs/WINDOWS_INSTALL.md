@@ -11,6 +11,8 @@ Windows SmartScreen may show a warning for an unsigned build. Verify the artifac
 
 The application uses Git for exact Odoo Community source acquisition. Install Git for Windows and ensure `git.exe` is available on PATH, or pre-populate the source cache. The first analysis of a path may download the required official snapshots; later work can run offline from the cache.
 
+Git is not required when every source version is supplied as a validated Local Exact Source. Select the local Odoo repository in the source card; the app reads `odoo/release.py`, records available Git metadata, and never changes that directory.
+
 Maintainers can build the application with:
 
 ```powershell

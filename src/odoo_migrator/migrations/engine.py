@@ -42,6 +42,7 @@ class MigrationEngine:
     def migrate(self, input_root: Path, output_root: Path, source: int, target: int,
                 dry_run: bool = False, source_snapshot: SourceSnapshot | None = None,
                 target_snapshot: SourceSnapshot | None = None,
+                source_snapshots: Iterable[SourceSnapshot] | None = None,
                 findings: Iterable[object] = (), modules_analyzed: int | None = None,
                 progress: Callable[[str, int], None] | None = None) -> MigrationResult:
         def report(stage: str, percent: int) -> None:
@@ -111,6 +112,7 @@ class MigrationEngine:
                 "migration_path": [step.key for step in plan.steps],
                 "source_snapshot": source_snapshot.as_dict() if source_snapshot else None,
                 "target_snapshot": target_snapshot.as_dict() if target_snapshot else None,
+                "source_snapshots": [snapshot.as_dict() for snapshot in (source_snapshots or ())],
                 "validation": {"state": "not_run", "level": 0},
                 "rules": sorted({c.rule_id for c in changes}),
                 "rule_versions": {
@@ -172,6 +174,17 @@ def _unified_diff(before: Path, after: Path) -> str:
 def _write_html_report(path: Path, metadata: dict, findings: Iterable[object], modules_analyzed: int | None) -> None:
     source = metadata.get("source_snapshot") or {}
     target = metadata.get("target_snapshot") or {}
+    source_mode = html.escape(str(source.get("source_mode", "unknown")))
+    target_mode = html.escape(str(target.get("source_mode", "unknown")))
+    source_path = html.escape(str(source.get("path", "")))
+    target_path = html.escape(str(target.get("path", "")))
+    source_commit = html.escape(str(source.get("actual_commit") or source.get("commit") or "unavailable"))
+    target_commit = html.escape(str(target.get("actual_commit") or target.get("commit") or "unavailable"))
+    source_rows = []
+    for snapshot in metadata.get("source_snapshots", ()):
+        source_rows.append("<tr>" + "".join(f"<td>{html.escape(str(value or 'unavailable'))}</td>" for value in (
+            snapshot.get("version"), snapshot.get("source_mode"), snapshot.get("path"), snapshot.get("actual_commit") or snapshot.get("commit"), snapshot.get("branch"), snapshot.get("origin"),
+        )) + "</tr>")
     finding_rows = []
     for finding in findings:
         finding_rows.append(
@@ -188,12 +201,13 @@ def _write_html_report(path: Path, metadata: dict, findings: Iterable[object], m
 <html lang="en"><head><meta charset="utf-8"><title>Odoo Addon Migrator report</title>
 <style>body{{font:14px Segoe UI,Arial,sans-serif;color:#172033;background:#f5f7fa;margin:0;padding:32px}}main{{max-width:1100px;margin:auto;background:white;padding:28px;border-radius:12px}}h1{{margin-top:0}}table{{border-collapse:collapse;width:100%;margin-top:18px}}th,td{{border:1px solid #d9dee8;padding:8px;text-align:left;vertical-align:top}}th{{background:#eef2f7}}.note{{background:#fff4d6;padding:12px;border-radius:8px}}</style></head>
 <body><main><h1>Odoo Addon Migrator</h1><p><strong>Static migration report</strong></p>
-<p>Source: Odoo {html.escape(str(metadata.get('source_version', '')))} ({html.escape(str(source.get('actual_commit', source.get('commit', ''))))})<br>
-Target: Odoo {html.escape(str(metadata.get('target_version', '')))} ({html.escape(str(target.get('actual_commit', target.get('commit', ''))))})<br>
+<p>Source: Odoo {html.escape(str(metadata.get('source_version', '')))}<br>Mode: {source_mode}<br>Commit: {source_commit}<br>Path: {source_path}<br>
+Target: Odoo {html.escape(str(metadata.get('target_version', '')))}<br>Mode: {target_mode}<br>Commit: {target_commit}<br>Path: {target_path}<br>
 Path: {html.escape(' → '.join(metadata.get('migration_path', [])))}<br>
 Modules analyzed: {html.escape(str(modules_analyzed if modules_analyzed is not None else 'unknown'))}<br>
 Validation: {html.escape(str(metadata.get('validation', {}).get('state', 'unknown')))}</p>
 <div class="note">Static validation and source analysis do not prove runtime compatibility. Review all findings and validate installation/tests separately.</div>
+<h2>Source identities</h2><table><thead><tr><th>Version</th><th>Mode</th><th>Path</th><th>Commit</th><th>Branch</th><th>Origin</th></tr></thead><tbody>{''.join(source_rows) or '<tr><td colspan="6">Source identity details unavailable.</td></tr>'}</tbody></table>
 <h2>Automatic changes</h2><p>{len(metadata.get('changes', []))} automatic change(s) applied.</p>
 <h2>Findings</h2><table><thead><tr><th>Severity</th><th>Step</th><th>Addon</th><th>File</th><th>Line</th><th>Rule</th><th>Message</th></tr></thead><tbody>{''.join(finding_rows)}</tbody></table>
 </main></body></html>"""

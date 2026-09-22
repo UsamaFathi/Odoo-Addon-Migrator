@@ -5,6 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
+from odoo_migrator.sources.registry import SourceMode, SourceSelection
+
 
 ORGANIZATION = "OdooAddonMigrator"
 APPLICATION = "OdooAddonMigrator"
@@ -62,6 +64,32 @@ class DesktopSettings:
             self._settings.setValue("last_path", str(Path(path).resolve()))
         else:
             self._settings.remove("last_path")
+        self._settings.sync()
+
+    def load_source_selection(self, version: int) -> SourceSelection | None:
+        mode = self._settings.value(f"sources/{version}/mode", "")
+        if not mode:
+            return None
+        try:
+            selected = SourceMode(str(mode))
+        except ValueError:
+            return None
+        raw_path = self._settings.value(f"sources/{version}/path", "")
+        return SourceSelection(version, selected, Path(str(raw_path)) if raw_path else None)
+
+    def save_source_selection(self, selection: SourceSelection, *, validated: bool = False) -> None:
+        if selection.mode is SourceMode.LOCAL_EXACT_SOURCE and not validated:
+            return
+        group = f"sources/{selection.version}"
+        self._settings.setValue(f"{group}/mode", selection.mode.value)
+        if selection.mode is SourceMode.LOCAL_EXACT_SOURCE and selection.path:
+            self._settings.setValue(f"{group}/path", str(Path(selection.path).resolve()))
+        else:
+            self._settings.remove(f"{group}/path")
+        self._settings.sync()
+
+    def forget_source_selection(self, version: int) -> None:
+        self._settings.remove(f"sources/{version}")
         self._settings.sync()
 
     def clear(self) -> None:

@@ -8,7 +8,7 @@ import pytest
 
 from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
-from odoo_migrator.sources.registry import SourceMode, SourceSpec, source_spec
+from odoo_migrator.sources.registry import SourceMode, SourceSelection, SourceSpec, source_spec
 from odoo_migrator.migrations.registry import default_registry
 
 
@@ -42,6 +42,57 @@ def _repository(tmp_path: Path) -> tuple[Path, str, str]:
 def _manager(tmp_path: Path, repo: Path, commit: str) -> SourceManager:
     spec = SourceSpec(18, "18.0", str(repo), commit)
     return SourceManager(tmp_path / "cache", source_specs={18: spec})
+
+
+def _local_source(tmp_path: Path, version: int, git: bool = False) -> Path:
+    root = tmp_path / f"odoo-{version}"
+    (root / "odoo").mkdir(parents=True); (root / "addons").mkdir()
+    (root / "odoo" / "release.py").write_text(f"version_info = ({version}, 0, 0, 'final', 0)\n", encoding="utf-8")
+    if git:
+        _git(root, "init"); _git(root, "config", "user.email", "tests@example.invalid"); _git(root, "config", "user.name", "Source Manager Tests")
+        _git(root, "add", "."); _git(root, "commit", "-m", "local source")
+    return root
+
+
+def test_local_exact_source_validates_without_writing_or_git(tmp_path: Path, monkeypatch):
+    root = _local_source(tmp_path, 18)
+    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+    monkeypatch.setattr("odoo_migrator.sources.manager.shutil.which", lambda _name: None)
+    snapshot = SourceManager(tmp_path / "cache").resolve_local(18, root)
+    assert snapshot.source_mode is SourceMode.LOCAL_EXACT_SOURCE
+    assert snapshot.actual_commit is None
+    assert snapshot.is_git_repository is False
+    assert snapshot.as_dict()["source_mode"] == "local_exact_source"
+    assert sorted(path.relative_to(root).as_posix() for path in root.rglob("*")) == before
+    assert not (root / ".odoo_migrator_snapshot.json").exists()
+
+
+def test_local_exact_source_rejects_wrong_version_and_arbitrary_folder(tmp_path: Path):
+    manager = SourceManager(tmp_path / "cache")
+    wrong = _local_source(tmp_path, 17)
+    with pytest.raises(SourceManagerError, match="Expected: Odoo 18.*Detected: Odoo 17"):
+        manager.resolve_local(18, wrong)
+    with pytest.raises(SourceManagerError, match="recognizable Odoo source tree"):
+        manager.resolve_local(18, tmp_path)
+
+
+def test_local_git_source_records_commit_branch_origin_and_dirty_state(tmp_path: Path):
+    root = _local_source(tmp_path, 18, git=True)
+    snapshot = SourceManager(tmp_path / "cache").resolve_local(18, root)
+    assert snapshot.is_git_repository is True
+    assert snapshot.actual_commit and len(snapshot.actual_commit) == 40
+    assert snapshot.is_dirty is False
+    (root / "README.md").write_text("local edit\n", encoding="utf-8")
+    dirty = SourceManager(tmp_path / "cache").resolve_local(18, root)
+    assert dirty.is_dirty is True
+
+
+def test_local_selection_resolves_without_ensure_or_git(tmp_path: Path, monkeypatch):
+    root = _local_source(tmp_path, 18)
+    manager = SourceManager(tmp_path / "cache")
+    monkeypatch.setattr("odoo_migrator.sources.manager.shutil.which", lambda _name: None)
+    snapshot = manager.resolve_selection(SourceSelection(18, SourceMode.LOCAL_EXACT_SOURCE, root))
+    assert snapshot.path == root.resolve()
 
 
 def test_verified_mode_detaches_to_pin_and_refresh_never_follows_branch(tmp_path: Path):

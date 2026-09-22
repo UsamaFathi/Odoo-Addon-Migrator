@@ -6,12 +6,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, QThread, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
 from odoo_migrator import __version__
 from odoo_migrator.application.services import AnalysisService, MigrationService, ProjectScanService
 from odoo_migrator.migrations.registry import default_registry
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
+from odoo_migrator.sources.registry import SourceMode, SourceSelection
 from odoo_migrator.ui.icons import app_icon
 from odoo_migrator.ui.models.application_state import ApplicationState
 from odoo_migrator.ui.pages.analysis import AnalysisPage
@@ -46,6 +47,9 @@ class MainWindow(QMainWindow):
     def __init__(self, parent=None, analysis_service=None, migration_service=None, scan_service=None, settings=None):
         super().__init__(parent); self.state = ApplicationState(); self.registry = default_registry()
         self.analysis_service = analysis_service or AnalysisService(self.registry); self.migration_service = migration_service or MigrationService(self.registry); self.scan_service = scan_service or ProjectScanService()
+        self.source_manager = getattr(self.analysis_service, "source_manager", None) or SourceManager()
+        if getattr(self.analysis_service, "source_manager", None) is None: self.analysis_service.source_manager = self.source_manager
+        self.source_selections: dict[int, SourceSelection] = {}
         self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._log_dir = configure_logging()
         if settings is None:
             self.settings = DesktopSettings()
@@ -66,12 +70,20 @@ class MainWindow(QMainWindow):
         root = QWidget(); root_layout = QHBoxLayout(root); root_layout.setContentsMargins(0, 0, 0, 0); root_layout.setSpacing(0); root_layout.addWidget(self.steps); root_layout.addWidget(content, 1); self.setCentralWidget(root); self.setStyleSheet(APP_STYLE)
         self.project_page.path_picker.pathChanged.connect(self._path_changed); self.project_page.sourceChanged.connect(self._source_changed); self.project_page.targetChanged.connect(self._target_changed); self.project_page.analyzeRequested.connect(self._analyze); self.project_page.outputChanged.connect(self._output_changed)
         self.analysis_page.backRequested.connect(lambda: self._show_page(0, 0)); self.analysis_page.migrateRequested.connect(self._migrate); self.results_page.openOutputRequested.connect(self._open_output); self.results_page.openReportRequested.connect(self._open_report); self.results_page.openDiffRequested.connect(self._open_diff); self.results_page.newProjectRequested.connect(self._new_project); self.analysis_page.details.openLocation.connect(self._open_finding_location)
+        self.project_page.localSourceRequested.connect(self._choose_local_source); self.project_page.downloadSourceRequested.connect(self._choose_verified_source); self.project_page.forgetSourceRequested.connect(self._forget_source)
 
     def _restore_settings(self) -> None:
         geometry = self.settings.load_geometry()
         if geometry: self.restoreGeometry(geometry)
         last_path = self.settings.load_last_project()
         if last_path: self.project_page.path_picker.setPath(last_path)
+        for version in self.registry.versions():
+            selection = self.settings.load_source_selection(version)
+            if not selection: continue
+            if selection.mode is SourceMode.LOCAL_EXACT_SOURCE:
+                try: self.source_manager.resolve_selection(selection)
+                except SourceManagerError: self.settings.forget_source_selection(version); continue
+            self.source_selections[version] = selection
 
     def closeEvent(self, event) -> None:
         if self._thread and self._thread.isRunning(): self._thread.quit(); self._thread.wait(5000)
@@ -88,13 +100,38 @@ class MainWindow(QMainWindow):
         if source is None: return
         current = self.project_page.selected_target(); targets = self.registry.reachable_targets(source); self.project_page.set_targets(targets, current if current in targets else (targets[0] if targets else None))
         if targets:
-            selected_target = self.project_page.selected_target() or targets[0]; self.project_page.suggest_output(selected_target); self.project_page.set_source_requirements(source, selected_target); self._refresh_source_status(source, selected_target); self._output_changed(self.project_page.output.text())
+            selected_target = self.project_page.selected_target() or targets[0]; self.project_page.suggest_output(selected_target); self.project_page.set_source_requirements(source, selected_target, selections=self.source_selections); self._refresh_source_status(source, selected_target); self._output_changed(self.project_page.output.text())
         self.state.set_versions(source, self.project_page.selected_target())
 
     def _refresh_source_status(self, source: int, target: int) -> None:
-        try: snapshots = self.analysis_service.source_status(source, target)
+        try: snapshots = self._source_status(source, target)
         except SourceManagerError: snapshots = None
-        self.project_page.set_source_requirements(source, target, snapshots)
+        self.project_page.set_source_requirements(source, target, snapshots, self.source_selections)
+
+    def _source_status(self, source: int, target: int):
+        try:
+            return self.analysis_service.source_status(source, target, manager=self.source_manager, source_selections=self.source_selections)
+        except TypeError:
+            # Preserve compatibility with small test/dry-run service adapters.
+            return self.analysis_service.source_status(source, target)
+
+    def _choose_local_source(self, version: int) -> None:
+        selected = QFileDialog.getExistingDirectory(self, f"Select Odoo {version} source folder")
+        if not selected: return
+        selection = SourceSelection(version, SourceMode.LOCAL_EXACT_SOURCE, Path(selected))
+        try: snapshot = self.source_manager.resolve_selection(selection)
+        except SourceManagerError as exc: self._show_error(str(exc)); return
+        self.source_selections[version] = selection; self.settings.save_source_selection(selection, validated=True); self._refresh_source_cards(); self._log("Local Odoo source selected", version=version, path=snapshot.path, commit=snapshot.actual_commit or "unavailable")
+
+    def _choose_verified_source(self, version: int) -> None:
+        selection = SourceSelection(version, SourceMode.VERIFIED_SNAPSHOT); self.source_selections[version] = selection; self.settings.save_source_selection(selection); self._refresh_source_cards()
+
+    def _forget_source(self, version: int) -> None:
+        self.source_selections.pop(version, None); self.settings.forget_source_selection(version); self._refresh_source_cards()
+
+    def _refresh_source_cards(self) -> None:
+        source, target = self.project_page.selected_source(), self.project_page.selected_target()
+        if source is not None and target is not None: self._refresh_source_status(source, target)
 
     def _source_changed(self, source: int) -> None:
         self.state.set_versions(source, None); self._refresh_targets(); self._clear_analysis()
@@ -122,18 +159,27 @@ class MainWindow(QMainWindow):
         if not root or not self.state.scan: self._show_error("Choose a valid addons folder first."); return
         if target is None: self._show_error("No implemented migration target is available from this source version."); return
         self.state.set_versions(source, target)
-        try: snapshots = self.analysis_service.source_status(source, target)
+        try: snapshots = self._source_status(source, target)
         except SourceManagerError as exc: self._show_error("Unable to inspect the local Odoo source cache.", str(exc)); return
+        invalid_local = [version for version, snapshot in snapshots.items() if snapshot is None and self.source_selections.get(version, SourceSelection(version)).mode is SourceMode.LOCAL_EXACT_SOURCE]
+        if invalid_local:
+            self._show_error("One or more selected local Odoo sources are invalid. Choose another folder.", ", ".join(f"Odoo {version}" for version in invalid_local)); return
         missing = [version for version, snapshot in snapshots.items() if snapshot is None]
+        unconfigured = [version for version in missing if version not in self.source_selections]
+        if unconfigured and not self._confirm_source_setup(unconfigured): return
+        if unconfigured:
+            try: snapshots = self._source_status(source, target)
+            except SourceManagerError as exc: self._show_error("Unable to inspect the selected Odoo sources.", str(exc)); return
+            missing = [version for version, snapshot in snapshots.items() if snapshot is None]
         if missing and not self._confirm_source_download(missing): return
-        self._show_page(1, 1); self.analysis_page.set_context(source, target, root); self._start_task("analysis", lambda progress=None: self.analysis_service.analyze(root, source, target, progress=progress), (), self._analysis_done, self.analysis_page.set_busy)
+        self._show_page(1, 1); self.analysis_page.set_context(source, target, root); self._start_task("analysis", lambda progress=None: self.analysis_service.analyze(root, source, target, progress=progress, source_selections=self.source_selections), (), self._analysis_done, self.analysis_page.set_busy)
 
     def _analysis_done(self, token: int, result) -> None:
         if token != self.state.operation_token: return
         self.state.set_analysis(result); self.analysis_page.set_analysis(result); self.analysis_page.set_context(result.plan.source, result.plan.target, result.scan.root)
         snapshots = {step.source: step.source_snapshot for step in result.steps}
         if result.steps: snapshots[result.steps[-1].target] = result.steps[-1].target_snapshot
-        self.project_page.sources.set_versions(sorted(snapshots), snapshots); self.analysis_page.details.set_project_root(result.scan.root); self._show_page(1, 2); self._log("Analysis completed", source=result.plan.source, target=result.plan.target, findings=len(result.findings))
+        self.project_page.sources.set_versions(sorted(snapshots), snapshots, self.source_selections); self.analysis_page.details.set_project_root(result.scan.root); self._show_page(1, 2); self._log("Analysis completed", source=result.plan.source, target=result.plan.target, findings=len(result.findings))
 
     def _migrate(self) -> None:
         analysis = self.state.analysis; output = self.project_page.selected_output()
@@ -169,6 +215,31 @@ class MainWindow(QMainWindow):
 
     def _confirm_source_download(self, versions: list[int]) -> bool:
         names = "\n".join(f"Odoo {version}" for version in versions); box = QMessageBox(self); box.setIcon(QMessageBox.Information); box.setWindowTitle("Odoo source files are required"); box.setText("Odoo source files are required"); box.setInformativeText(f"The following official Community snapshots are not cached:\n\n{names}\n\nThey will be downloaded from the official Odoo GitHub repository and stored locally.\n\nContinue?"); download = box.addButton("Download and Analyze", QMessageBox.AcceptRole); box.addButton("Cancel", QMessageBox.RejectRole); box.exec(); return box.clickedButton() is download
+
+    def _confirm_source_setup(self, versions: list[int]) -> bool:
+        dialog = QDialog(self); dialog.setWindowTitle("Configure Odoo sources"); layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Odoo source required\nChoose a local source or download the verified snapshot for each version."))
+        rows: dict[int, QLabel] = {}
+        for version in versions:
+            row = QHBoxLayout(); title = QLabel(f"Odoo {version}"); state = QLabel("Not configured"); rows[version] = state; local = QPushButton("Select local source"); download = QPushButton("Download verified"); download.setObjectName("secondary")
+            local.clicked.connect(lambda _checked=False, value=version: (self._setup_local_source(dialog, value, rows[value]), refresh()))
+            download.clicked.connect(lambda _checked=False, value=version: (self._setup_verified_source(value, rows[value]), refresh()))
+            row.addWidget(title); row.addWidget(state, 1); row.addWidget(local); row.addWidget(download); layout.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel); continue_button = buttons.addButton("Continue when ready", QDialogButtonBox.AcceptRole); continue_button.setEnabled(False); buttons.rejected.connect(dialog.reject); buttons.accepted.connect(dialog.accept); layout.addWidget(buttons)
+        def refresh() -> None:
+            continue_button.setEnabled(all(version in self.source_selections for version in versions))
+        refresh(); return dialog.exec() == QDialog.Accepted
+
+    def _setup_local_source(self, parent: QDialog, version: int, label: QLabel) -> None:
+        selected = QFileDialog.getExistingDirectory(parent, f"Select Odoo {version} source folder")
+        if not selected: return
+        selection = SourceSelection(version, SourceMode.LOCAL_EXACT_SOURCE, Path(selected))
+        try: self.source_manager.resolve_selection(selection)
+        except SourceManagerError as exc: QMessageBox.warning(parent, "Wrong Odoo source version", str(exc)); return
+        self.source_selections[version] = selection; self.settings.save_source_selection(selection, validated=True); label.setText("Local source selected")
+
+    def _setup_verified_source(self, version: int, label: QLabel) -> None:
+        selection = SourceSelection(version, SourceMode.VERIFIED_SNAPSHOT); self.source_selections[version] = selection; self.settings.save_source_selection(selection); label.setText("Verified snapshot selected")
 
     def _task_finished(self, token: int, busy_callback) -> None:
         if token == self.state.operation_token: self._busy = False; busy_callback(False)

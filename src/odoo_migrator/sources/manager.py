@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Mapping
+import ast
 import json
 import shutil
 import subprocess
 
-from .registry import SourceMode, SourceSnapshot, SourceSpec, source_spec
+from .registry import SourceMode, SourceSelection, SourceSnapshot, SourceSpec, source_spec
 
 
 class SourceManagerError(RuntimeError):
@@ -39,9 +40,14 @@ class SourceManager:
         return self.cache_root / selected.value / spec.branch
 
     def ensure(self, version: int | str, refresh: bool = False,
-               mode: SourceMode | str = SourceMode.VERIFIED_SNAPSHOT) -> SourceSnapshot:
+               mode: SourceMode | str = SourceMode.VERIFIED_SNAPSHOT,
+               local_path: Path | None = None) -> SourceSnapshot:
         spec = self._spec(version)
         selected = self._mode(mode)
+        if selected is SourceMode.LOCAL_EXACT_SOURCE:
+            if local_path is None:
+                raise SourceManagerError(f"A local Odoo {spec.version} source path is required.")
+            return self.resolve_local(spec.version, local_path)
         dest = self.path_for(spec.version, selected)
         git = shutil.which("git")
         if not git:
@@ -108,6 +114,56 @@ class SourceManager:
         snapshot.save()
         return snapshot
 
+    def resolve_selection(self, selection: SourceSelection, refresh: bool = False) -> SourceSnapshot:
+        if selection.mode is SourceMode.LOCAL_EXACT_SOURCE:
+            return self.resolve_local(selection.version, selection.path)
+        return self.ensure(selection.version, refresh=refresh, mode=selection.mode)
+
+    def resolve_local(self, version: int | str, path: Path) -> SourceSnapshot:
+        """Validate and describe a user-owned Odoo tree without writing to it."""
+        expected = self._spec(version).version
+        root = Path(path).expanduser().resolve()
+        if not root.is_dir():
+            raise SourceManagerError(f"Local Odoo source directory does not exist: {root}")
+        release = root / "odoo" / "release.py"
+        if not release.is_file() or not (root / "addons").is_dir():
+            raise SourceManagerError(f"Folder is not a recognizable Odoo source tree: {root}")
+        detected = self._read_release_version(release)
+        if detected != expected:
+            raise SourceManagerError(f"Wrong Odoo source version. Expected: Odoo {expected}. Detected: Odoo {detected}.")
+        git = shutil.which("git")
+        is_git = (root / ".git").exists() and bool(git)
+        is_git_repository = (root / ".git").exists()
+        commit = branch_name = origin = None
+        dirty = False
+        if is_git:
+            commit = self._try_capture([git, "-C", str(root), "rev-parse", "HEAD"])
+            branch_name = self._try_capture([git, "-C", str(root), "symbolic-ref", "--short", "-q", "HEAD"])
+            origin = self._try_capture([git, "-C", str(root), "remote", "get-url", "origin"])
+            status = self._try_capture([git, "-C", str(root), "status", "--porcelain"])
+            dirty = bool(status)
+        return SourceSnapshot(
+            expected, branch_name or f"{expected}.0", origin or "", commit, root,
+            SourceMode.LOCAL_EXACT_SOURCE, None, origin, dirty, is_git_repository,
+        )
+
+    @staticmethod
+    def _read_release_version(path: Path) -> int:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError, UnicodeError) as exc:
+            raise SourceManagerError(f"Unable to read Odoo release metadata: {path}") from exc
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if not any(isinstance(target, ast.Name) and target.id == "version_info" for target in targets):
+                continue
+            value = node.value
+            if isinstance(value, ast.Tuple) and value.elts and isinstance(value.elts[0], ast.Constant) and isinstance(value.elts[0].value, int):
+                return int(value.elts[0].value)
+        raise SourceManagerError(f"Odoo release version could not be identified from: {path}")
+
     def snapshot(self, version: int | str,
                  mode: SourceMode | str = SourceMode.VERIFIED_SNAPSHOT) -> SourceSnapshot | None:
         selected = self._mode(mode)
@@ -126,6 +182,8 @@ class SourceManager:
                 int(data["version"]), data["branch"], data["repo_url"],
                 data.get("actual_commit") or data.get("commit"), dest, stored_mode,
                 data.get("expected_commit"),
+                data.get("origin"), bool(data.get("is_dirty", False)), bool(data.get("is_git_repository", True)),
+                data.get("fingerprint"),
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise SourceManagerError(f"Invalid source snapshot metadata: {meta}") from exc
@@ -169,3 +227,11 @@ class SourceManager:
         except (OSError, subprocess.CalledProcessError) as exc:
             detail = getattr(exc, "output", None) or str(exc)
             raise SourceManagerError(detail.strip()) from exc
+
+    @staticmethod
+    def _try_capture(args: list[str]) -> str | None:
+        try:
+            value = subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
+            return value or None
+        except (OSError, subprocess.CalledProcessError):
+            return None

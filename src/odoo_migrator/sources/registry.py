@@ -22,6 +22,16 @@ VERIFIED_COMMUNITY_COMMITS: dict[int, str] = {
 class SourceMode(str, Enum):
     VERIFIED_SNAPSHOT = "verified_snapshot"
     LATEST_OFFICIAL_BRANCH = "latest_official_branch"
+    LOCAL_EXACT_SOURCE = "local_exact_source"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSelection:
+    """Per-version source choice supplied by the caller/UI."""
+
+    version: int
+    mode: SourceMode = SourceMode.VERIFIED_SNAPSHOT
+    path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,13 +47,17 @@ class SourceSnapshot:
     version: int
     branch: str
     repo_url: str
-    commit: str
+    commit: str | None
     path: Path
     source_mode: SourceMode = SourceMode.VERIFIED_SNAPSHOT
     expected_commit: str | None = None
+    origin: str | None = None
+    is_dirty: bool = False
+    is_git_repository: bool = True
+    fingerprint: str | None = None
 
     @property
-    def actual_commit(self) -> str:
+    def actual_commit(self) -> str | None:
         """The commit actually checked out in this source tree."""
         return self.commit
 
@@ -60,9 +74,16 @@ class SourceSnapshot:
             "expected_commit": self.expected_commit,
             "actual_commit": self.actual_commit,
             "path": str(self.path),
+            "origin": self.origin,
+            "is_dirty": self.is_dirty,
+            "is_git_repository": self.is_git_repository,
+            "fingerprint": self.fingerprint,
         }
 
     def save(self) -> None:
+        if self.source_mode is SourceMode.LOCAL_EXACT_SOURCE:
+            # A local source is user-owned input. Never write metadata into it.
+            return
         payload = self.as_dict()
         (self.path / ".odoo_migrator_snapshot.json").write_text(
             json.dumps(payload, indent=2), encoding="utf-8"

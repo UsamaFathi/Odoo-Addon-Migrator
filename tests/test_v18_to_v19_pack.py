@@ -239,6 +239,9 @@ def test_application_18_to_19_records_exact_metadata_and_preserves_input(tmp_pat
     assert metadata["migration_path"] == ["18_to_19"]
     assert metadata["source_snapshot"]["commit"] == SOURCE_SHA
     assert metadata["target_snapshot"]["commit"] == TARGET_SHA
+    assert [item["version"] for item in metadata["source_snapshots"]] == [18, 19]
+    assert [item["actual_commit"] for item in metadata["source_snapshots"]] == [SOURCE_SHA, TARGET_SHA]
+    assert "Source identities" in (tmp_path / "output" / "migration_report.html").read_text(encoding="utf-8")
     assert metadata["validation"]["state"] == "passed"
     assert "manifest.version.18_to_19" in metadata["rule_versions"]
     assert validate_project(tmp_path / "output") == ()

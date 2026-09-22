@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from odoo_migrator.analysis.compat import Finding, compare_custom_to_target, deduplicate_findings
 from odoo_migrator.analysis.project import ProjectScan, scan_custom_addons
 from odoo_migrator.core.planner import MigrationPlan, build_plan
 from odoo_migrator.migrations.engine import MigrationEngine, MigrationResult
 from odoo_migrator.sources.indexer import SourceIndexer
-from odoo_migrator.sources.manager import SourceManager
-from odoo_migrator.sources.registry import SourceSnapshot
+from odoo_migrator.sources.manager import SourceManager, SourceManagerError
+from odoo_migrator.sources.registry import SourceMode, SourceSelection, SourceSnapshot
 from odoo_migrator.sources.diff import compare_indexes
 from odoo_migrator.migrations.registry import MigrationPackRegistry, default_registry
 import tempfile
@@ -75,20 +75,31 @@ class AnalysisService:
         self.registry = registry or default_registry()
         self.source_manager = source_manager
 
-    def source_status(self, source: int, target: int, manager: SourceManager | None = None) -> dict[int, SourceSnapshot | None]:
-        """Read cached snapshot metadata without performing Git/network work."""
+    def source_status(self, source: int, target: int, manager: SourceManager | None = None,
+                     source_selections: Mapping[int, SourceSelection] | None = None) -> dict[int, SourceSnapshot | None]:
+        """Read source readiness without downloading or updating official caches."""
         manager = manager or self.source_manager or SourceManager()
         snapshot = getattr(manager, "snapshot", None)
         statuses = {}
         for version in range(source, target + 1):
-            value = snapshot(version) if snapshot else None
+            selection = (source_selections or {}).get(version)
+            if selection and selection.mode is SourceMode.LOCAL_EXACT_SOURCE:
+                try:
+                    value = manager.resolve_selection(selection)
+                except SourceManagerError:
+                    value = None
+            elif selection and selection.mode is not SourceMode.VERIFIED_SNAPSHOT:
+                value = snapshot(version, mode=selection.mode) if snapshot else None
+            else:
+                value = snapshot(version) if snapshot else None
             if value is not None and value.source_mode.value == "verified_snapshot" and value.expected_commit != value.actual_commit:
                 value = None
             statuses[version] = value
         return statuses
 
     def analyze(self, root: Path, source: int, target: int, manager: SourceManager | None = None,
-                progress: Callable[[str, int], None] | None = None) -> AnalysisResult:
+                progress: Callable[[str, int], None] | None = None,
+                source_selections: Mapping[int, SourceSelection] | None = None) -> AnalysisResult:
         def report(stage: str, percent: int) -> None:
             if progress:
                 progress(stage, percent)
@@ -102,13 +113,20 @@ class AnalysisService:
         scan = scan_custom_addons(root); indexer = SourceIndexer()
         snapshots = {}
         for offset, version in enumerate(range(source, target + 1)):
-            snapshot = getattr(manager, "snapshot", None)
-            cached = snapshot(version) if snapshot else None
-            if cached is None:
-                report(f"Downloading Odoo {version} verified snapshot", 12 + offset * 6)
+            selection = (source_selections or {}).get(version)
+            snapshot_reader = getattr(manager, "snapshot", None)
+            cached = None
+            if selection and selection.mode is SourceMode.LOCAL_EXACT_SOURCE:
+                report(f"Using local Odoo {version} source", 12 + offset * 6)
+                snapshots[version] = manager.resolve_selection(selection)
             else:
-                report(f"Odoo {version} verified snapshot ready locally", 12 + offset * 6)
-            snapshots[version] = manager.ensure(version)
+                selected_mode = selection.mode if selection else SourceMode.VERIFIED_SNAPSHOT
+                cached = snapshot_reader(version, mode=selected_mode) if snapshot_reader else None
+                if cached is None:
+                    report(f"Downloading Odoo {version} verified snapshot", 12 + offset * 6)
+                else:
+                    report(f"Odoo {version} verified snapshot ready locally", 12 + offset * 6)
+                snapshots[version] = manager.resolve_selection(selection) if selection else manager.ensure(version)
             report(f"Preparing Odoo {version}", 15 + offset * 6)
         indexes = {}
         for offset, version in enumerate(snapshots):
@@ -162,10 +180,13 @@ class MigrationService:
         if analysis.blockers:
             raise ValueError("Migration is blocked until all blocker findings are resolved.")
         self.registry.require_plan(analysis.plan.steps)
+        ordered_snapshots = [step.source_snapshot for step in analysis.steps]
+        ordered_snapshots.append(analysis.steps[-1].target_snapshot if analysis.steps else analysis.target_snapshot)
         return MigrationEngine(self.registry).migrate(root, output, analysis.plan.source, analysis.plan.target,
                                          dry_run=dry_run,
                                          source_snapshot=analysis.source_snapshot,
                                          target_snapshot=analysis.target_snapshot,
+                                         source_snapshots=tuple(ordered_snapshots),
                                          findings=analysis.findings,
                                          modules_analyzed=analysis.scan.module_count,
                                          progress=progress)

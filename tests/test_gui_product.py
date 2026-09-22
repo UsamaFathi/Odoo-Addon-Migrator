@@ -25,7 +25,7 @@ from odoo_migrator.ui.pages.results import ResultsPage
 from odoo_migrator.ui.widgets.finding_details import FindingDetails
 from odoo_migrator.ui.widgets.source_status import SourceStatus
 from odoo_migrator.application.services import AnalysisService, MigrationService
-from odoo_migrator.sources.registry import SourceMode, SourceSnapshot
+from odoo_migrator.sources.registry import SourceMode, SourceSelection, SourceSnapshot
 
 
 @pytest.fixture(scope="module")
@@ -116,9 +116,59 @@ def test_source_status_distinguishes_cached_and_missing(qapp, tmp_path: Path):
     cached = SourceSnapshot(18, "18.0", "controlled://odoo", "a" * 40, tmp_path, SourceMode.VERIFIED_SNAPSHOT, "a" * 40)
     status.set_versions([17, 18], {17: None, 18: cached})
     text = status.label.text()
-    assert "Odoo 17  •  Download required" in text
+    assert "Odoo 17  •  Source required" in text
     assert "Odoo 18  •  Ready locally" in text
     assert "Verified Snapshot" in text
+
+
+def test_source_status_supports_local_exact_source_card(qapp, tmp_path: Path):
+    status = SourceStatus()
+    root = tmp_path / "odoo18"
+    local = SourceSnapshot(18, "18.0", "", None, root, SourceMode.LOCAL_EXACT_SOURCE, None, None, False, False)
+    status.set_versions([18, 19], {18: local, 19: None}, {18: SourceSelection(18, SourceMode.LOCAL_EXACT_SOURCE, root)})
+    assert status.cards[0].status.text() == "Local source"
+    assert status.cards[0].mode.text() == "Local Exact Source"
+    assert status.cards[1].status.text() == "Source required"
+
+
+def test_source_status_accepts_mixed_local_and_verified_selections(tmp_path: Path):
+    class Manager:
+        def resolve_selection(self, selection):
+            return SourceSnapshot(selection.version, f"{selection.version}.0", "", None, selection.path, SourceMode.LOCAL_EXACT_SOURCE)
+
+        def snapshot(self, version, mode=SourceMode.VERIFIED_SNAPSHOT):
+            return None
+
+    root = tmp_path / "odoo18"
+    result = AnalysisService(source_manager=Manager()).source_status(18, 19, source_selections={18: SourceSelection(18, SourceMode.LOCAL_EXACT_SOURCE, root), 19: SourceSelection(19, SourceMode.VERIFIED_SNAPSHOT)})
+    assert result[18].source_mode is SourceMode.LOCAL_EXACT_SOURCE
+    assert result[19] is None
+
+
+def test_analysis_uses_local_18_and_verified_19_without_local_mutation(tmp_path: Path):
+    def source_tree(root: Path, version: int) -> Path:
+        (root / "odoo").mkdir(parents=True); (root / "addons" / "base").mkdir(parents=True)
+        (root / "odoo" / "release.py").write_text(f"version_info = ({version}, 0, 0, 'final', 0)\n", encoding="utf-8")
+        (root / "addons" / "base" / "__manifest__.py").write_text(repr({"name": "Base", "version": f"{version}.0.1.0.0"}), encoding="utf-8")
+        return root
+
+    local_root = source_tree(tmp_path / "local18", 18); verified_root = source_tree(tmp_path / "verified19", 19)
+    local_before = sorted(path.relative_to(local_root).as_posix() for path in local_root.rglob("*"))
+    snapshots = {
+        18: SourceSnapshot(18, "18.0", "", None, local_root, SourceMode.LOCAL_EXACT_SOURCE),
+        19: SourceSnapshot(19, "19.0", "controlled://odoo", "verified-19", verified_root, SourceMode.VERIFIED_SNAPSHOT, "verified-19"),
+    }
+
+    class MixedManager:
+        def snapshot(self, version, mode=SourceMode.VERIFIED_SNAPSHOT): return None
+        def resolve_selection(self, selection): return snapshots[selection.version]
+
+    custom = tmp_path / "custom" / "demo"; custom.mkdir(parents=True)
+    manifest = custom / "__manifest__.py"; manifest.write_text(repr({"name": "Demo", "version": "18.0.1.0.0"}), encoding="utf-8")
+    result = AnalysisService(source_manager=MixedManager()).analyze(custom.parent, 18, 19, source_selections={18: SourceSelection(18, SourceMode.LOCAL_EXACT_SOURCE, local_root), 19: SourceSelection(19, SourceMode.VERIFIED_SNAPSHOT)})
+    assert result.source_snapshot.source_mode is SourceMode.LOCAL_EXACT_SOURCE
+    assert result.target_snapshot.source_mode is SourceMode.VERIFIED_SNAPSHOT
+    assert sorted(path.relative_to(local_root).as_posix() for path in local_root.rglob("*")) == local_before
 
 
 def test_analyze_requires_confirmation_when_sources_are_missing(qapp, tmp_path: Path, monkeypatch):
@@ -134,6 +184,7 @@ def test_analyze_requires_confirmation_when_sources_are_missing(qapp, tmp_path: 
     window.project_page.path_picker.edit.blockSignals(True); window.project_page.path_picker.setPath(root); window.project_page.path_picker.edit.blockSignals(False)
     window.state.reset_project(root); window.state.set_scan(scan_custom_addons(root))
     window.project_page.set_source_versions([18, 19], 18); window.project_page.set_targets((19,), 19)
+    monkeypatch.setattr(window, "_confirm_source_setup", lambda versions: False)
     monkeypatch.setattr(window, "_confirm_source_download", lambda versions: False)
     window._analyze()
     assert window.stack.currentIndex() == 0
@@ -157,6 +208,17 @@ def test_stale_temp_last_path_is_not_restored(qapp, tmp_path: Path):
     window = MainWindow(settings=settings_module.DesktopSettings(settings))
     assert window.project_page.path_picker.edit.text() == ""
     window.close()
+
+
+def test_local_source_mapping_persists_only_in_isolated_settings(tmp_path: Path):
+    settings = settings_module.DesktopSettings(QSettings(str(tmp_path / "sources.ini"), QSettings.IniFormat))
+    root = tmp_path / "odoo18"
+    selection = SourceSelection(18, SourceMode.LOCAL_EXACT_SOURCE, root)
+    settings.save_source_selection(selection, validated=True)
+    loaded = settings.load_source_selection(18)
+    assert loaded and loaded.mode is SourceMode.LOCAL_EXACT_SOURCE and loaded.path == root
+    settings.forget_source_selection(18)
+    assert settings.load_source_selection(18) is None
 
 
 def test_rc2_shell_is_usable_at_standard_windows_size(qapp):

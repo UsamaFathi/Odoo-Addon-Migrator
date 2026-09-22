@@ -10,6 +10,7 @@ from odoo_migrator.ui.models.application_state import suggested_output_path
 from odoo_migrator.ui.widgets.design_system import MetricCard, SectionHeader, StatusBadge, SurfaceCard
 from odoo_migrator.ui.widgets.path_picker import PathPicker
 from odoo_migrator.ui.widgets.source_status import SourceStatus
+from odoo_migrator.sources.registry import SourceSelection
 
 
 class ProjectPage(QWidget):
@@ -17,6 +18,9 @@ class ProjectPage(QWidget):
     sourceChanged = Signal(int)
     targetChanged = Signal(int)
     outputChanged = Signal(str)
+    localSourceRequested = Signal(int)
+    downloadSourceRequested = Signal(int)
+    forgetSourceRequested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,6 +34,9 @@ class ProjectPage(QWidget):
         self.summary = QLabel("Choose your custom_addons folder to begin."); self.summary.setObjectName("muted"); self.summary.setWordWrap(True)
         self.detection = StatusBadge("Source not detected", "badgeInfo")
         self.sources = SourceStatus()
+        self.sources.localRequested.connect(self.localSourceRequested)
+        self.sources.downloadRequested.connect(self.downloadSourceRequested)
+        self.sources.forgetRequested.connect(self.forgetSourceRequested)
         self.metrics = []
         self.model = AddonsModel(self); self.modules = QTableView(); self.modules.setModel(self.model); self.modules.setSortingEnabled(True); self.modules.setAlternatingRowColors(True)
         self.modules.setSelectionBehavior(QTableView.SelectRows); self.modules.verticalHeader().setDefaultSectionSize(36); self.modules.horizontalHeader().setStretchLastSection(True)
@@ -110,8 +117,8 @@ class ProjectPage(QWidget):
     def state_ready(self) -> bool:
         return self.path_picker.path().is_dir()
 
-    def set_source_requirements(self, source: int, target: int, snapshots=None) -> None:
-        self.sources.set_versions(list(range(source, target + 1)), snapshots)
+    def set_source_requirements(self, source: int, target: int, snapshots=None, selections: dict[int, SourceSelection] | None = None) -> None:
+        self.sources.set_versions(list(range(source, target + 1)), snapshots, selections)
 
     def set_error(self, message: str) -> None:
         self._set_status(message, "badgeDanger")
