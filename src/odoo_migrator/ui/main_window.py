@@ -15,7 +15,6 @@ from odoo_migrator import __version__
 from odoo_migrator.application.services import AnalysisService, MigrationService, ProjectScanService
 from odoo_migrator.migrations.registry import default_registry
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
-from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.ui.models.application_state import ApplicationState
 from odoo_migrator.ui.pages.analysis import AnalysisPage
 from odoo_migrator.ui.pages.migration import MigrationPage
@@ -27,10 +26,6 @@ from odoo_migrator.ui.workers.task_worker import TaskWorker
 
 
 logger = logging.getLogger("odoo_migrator.ui")
-
-
-def _display_version(version: str) -> str:
-    return version.replace("rc", "-rc.") if "rc" in version else version
 
 
 def _display_version(version: str) -> str:

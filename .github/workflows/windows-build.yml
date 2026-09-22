@@ -34,13 +34,47 @@ jobs:
           if (Test-Path $installRoot) { Remove-Item -Recurse -Force $installRoot }
           New-Item -ItemType Directory -Path $installRoot | Out-Null
           $installer = (Resolve-Path .\dist\OdooAddonMigrator_Setup.exe).Path
-          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installRoot"
-          if ($LASTEXITCODE -ne 0) { throw "Installer failed with exit code $LASTEXITCODE" }
+          $installProcess = Start-Process `
+              -FilePath $installer `
+              -ArgumentList @(
+                  "/VERYSILENT",
+                  "/SUPPRESSMSGBOXES",
+                  "/NORESTART",
+                  "/SP-",
+                  "/DIR=$installRoot"
+              ) `
+              -Wait `
+              -PassThru
+          if ($installProcess.ExitCode -ne 0) {
+              throw "Installer failed with exit code $($installProcess.ExitCode)"
+          }
           $installed = Join-Path $installRoot "OdooAddonMigrator.exe"
-          & $installed --smoke-test
-          if ($LASTEXITCODE -ne 0) { throw "Installed EXE smoke test failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $installed)) {
+              throw "Installed executable was not found: $installed"
+          }
+          $smoke = Start-Process `
+              -FilePath $installed `
+              -ArgumentList "--smoke-test" `
+              -Wait `
+              -PassThru
+          if ($smoke.ExitCode -ne 0) {
+              throw "Installed EXE smoke test failed with exit code $($smoke.ExitCode)"
+          }
           $uninstaller = Join-Path $installRoot "unins000.exe"
-          if (Test-Path $uninstaller) { & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART }
+          if (Test-Path -LiteralPath $uninstaller) {
+              $uninstallProcess = Start-Process `
+                  -FilePath $uninstaller `
+                  -ArgumentList @(
+                      "/VERYSILENT",
+                      "/SUPPRESSMSGBOXES",
+                      "/NORESTART"
+                  ) `
+                  -Wait `
+                  -PassThru
+              if ($uninstallProcess.ExitCode -ne 0) {
+                  throw "Uninstaller failed with exit code $($uninstallProcess.ExitCode)"
+              }
+          }
       - name: Upload Windows application
         uses: actions/upload-artifact@v4
         with:
