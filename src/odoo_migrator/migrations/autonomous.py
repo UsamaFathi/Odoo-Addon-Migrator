@@ -109,7 +109,7 @@ class DependencyModuleRenameResolver:
 
 
 _INHERIT_ASSIGNMENT = re.compile(
-    r"(?P<prefix>\\b_inherit\\s*=\\s*)(?P<value>\\[[^\\]]*\\]|\\([^\\)]*\\)|['\\\"][^'\\\"]+['\\\"])",
+    r"(?P<prefix>\b_inherit\s*=\s*)(?P<value>\[[^\]]*\]|\([^\)]*\)|['\"][^'\"]+['\"])",
     re.DOTALL,
 )
 
