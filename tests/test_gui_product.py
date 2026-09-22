@@ -11,7 +11,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPoint, QRect, QSettings
+from PySide6.QtCore import QPoint, QRect, QSettings, QThread
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QGridLayout, QLabel
 
@@ -236,7 +236,7 @@ def test_rc2_shell_is_usable_at_standard_windows_size(qapp):
     window.close()
 
 
-@pytest.mark.parametrize("size", [(1366, 768), (1920, 1080)])
+@pytest.mark.parametrize("size", [(1233, 726), (1366, 768), (1920, 1080)])
 def test_project_setup_card_has_no_overlapping_controls(qapp, size):
     window = MainWindow()
     window.resize(*size)
@@ -256,6 +256,9 @@ def test_project_setup_card_has_no_overlapping_controls(qapp, size):
     assert page.source.geometry().bottom() < page.output_label.geometry().top()
     assert page.target.geometry().bottom() < page.output_label.geometry().top()
     assert page.output.geometry().bottom() < card.contentsRect().bottom()
+    assert not page.setup_card.geometry().intersects(page.detection.geometry())
+    output_bottom = page.output.mapTo(page, QPoint(0, page.output.height() - 1)).y()
+    assert output_bottom < page.detection.geometry().top()
 
     widgets = [page.path_picker, page.browse_button, page.source, page.target, page.output]
     widgets.extend(card.findChildren(QLabel, "fieldLabel"))
@@ -273,6 +276,33 @@ def test_project_setup_card_has_no_overlapping_controls(qapp, size):
                 right_widget.objectName(), right_rect.getRect(),
             )
 
+    window.close()
+
+
+def test_worker_callbacks_are_delivered_on_gui_thread(qapp):
+    window = MainWindow()
+    results = []
+    callback_threads = []
+    window._show_page(1, 1)
+    window.analysis_page.set_progress = lambda _stage, _percent: callback_threads.append(("stage", QThread.currentThread()))
+
+    def operation(progress=None):
+        progress("Working", 50)
+        return "done"
+
+    def success(_token, result):
+        callback_threads.append(("success", QThread.currentThread()))
+        results.append(result)
+
+    window._start_task("probe", operation, (), success, lambda _busy: None)
+    deadline = time.time() + 5
+    while window._busy and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+
+    assert results == ["done"]
+    assert {name for name, _thread in callback_threads} == {"stage", "success"}
+    assert all(thread is qapp.thread() for _name, thread in callback_threads)
     window.close()
 
 

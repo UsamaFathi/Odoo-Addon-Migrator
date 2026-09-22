@@ -3,7 +3,43 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
+
+
+def smoke_test(app) -> bool:
+    """Exercise packaged window creation and queued worker-to-GUI delivery."""
+    from PySide6.QtCore import QSettings, QThread
+
+    from odoo_migrator.ui.main_window import MainWindow
+    from odoo_migrator.ui.settings import DesktopSettings
+
+    completed = []
+    gui_callbacks = []
+    with tempfile.TemporaryDirectory(prefix="odoo-migrator-smoke-") as temporary:
+        settings = DesktopSettings(QSettings(str(Path(temporary) / "smoke.ini"), QSettings.IniFormat))
+        window = MainWindow(settings=settings)
+        window._show_page(1, 1)
+        window.analysis_page.set_progress = lambda _stage, _percent: gui_callbacks.append(QThread.isMainThread())
+
+        def operation(progress=None):
+            progress("Checking desktop worker", 50)
+            return "ready"
+
+        def success(_token, result):
+            gui_callbacks.append(QThread.isMainThread())
+            completed.append(result)
+
+        window._start_task("smoke", operation, (), success, lambda _busy: None)
+        deadline = time.monotonic() + 10
+        while window._busy and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        app.processEvents()
+        passed = completed == ["ready"] and gui_callbacks == [True, True]
+        window.close()
+        app.processEvents()
+        return passed
 
 
 def capture_ui(app, output: Path) -> bool:
@@ -47,10 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     app = QApplication([sys.argv[0], *argv])
     if "--smoke-test" in argv:
-        from odoo_migrator.ui.main_window import MainWindow
-        window = MainWindow()
-        window.close()
-        return 0
+        return 0 if smoke_test(app) else 1
     if "--capture-ui" in argv:
         output = Path(os.environ.get("ODOO_MIGRATOR_UI_CAPTURE", "OdooAddonMigrator-Project-1366x768.png"))
         if not capture_ui(app, output):

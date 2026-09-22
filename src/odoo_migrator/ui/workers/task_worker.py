@@ -9,13 +9,14 @@ from PySide6.QtCore import QObject, Signal
 class TaskWorker(QObject):
     """Run one application service operation away from the GUI thread."""
 
-    stage = Signal(str, int)
-    succeeded = Signal(object)
-    failed = Signal(str, str)
+    stage = Signal(int, str, int)
+    succeeded = Signal(int, object)
+    failed = Signal(int, str, str)
     finished = Signal()
 
-    def __init__(self, operation: Callable[..., Any], *args: Any, **kwargs: Any):
+    def __init__(self, token: int, operation: Callable[..., Any], *args: Any, **kwargs: Any):
         super().__init__()
+        self.token = token
         self.operation = operation
         self.args = args
         self.kwargs = kwargs
@@ -23,11 +24,11 @@ class TaskWorker(QObject):
     def run(self) -> None:
         try:
             result = self.operation(*self.args, progress=self._report)
-            self.succeeded.emit(result)
+            self.succeeded.emit(self.token, result)
         except Exception as exc:  # noqa: BLE001 - converted to a user-facing structured error
-            self.failed.emit(str(exc), repr(exc))
+            self.failed.emit(self.token, str(exc), repr(exc))
         finally:
             self.finished.emit()
 
     def _report(self, stage: str, percent: int) -> None:
-        self.stage.emit(stage, max(0, min(100, int(percent))))
+        self.stage.emit(self.token, stage, max(0, min(100, int(percent))))

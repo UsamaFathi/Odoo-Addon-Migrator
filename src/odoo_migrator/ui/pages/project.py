@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
 
 from odoo_migrator.ui.models.addons_model import AddonsModel
 from odoo_migrator.ui.models.application_state import suggested_output_path
@@ -47,11 +47,15 @@ class ProjectPage(QWidget):
         self._build()
         self._set_controls_enabled(False)
 
+    def sizeHint(self):  # noqa: N802 - Qt API
+        """Prefer the compact layout; the addons table absorbs extra height."""
+        return self.minimumSizeHint()
+
     def _build(self) -> None:
-        main = QVBoxLayout(self); main.setContentsMargins(28, 20, 28, 16); main.setSpacing(8)
+        main = QVBoxLayout(self); main.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); main.setContentsMargins(28, 16, 28, 12); main.setSpacing(6)
         main.addWidget(SectionHeader("Project", "Select the custom addons you want to migrate. Your original files will never be modified."))
         setup = SurfaceCard(); setup.setObjectName("projectSetupCard"); setup.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum); self.setup_card = setup
-        setup_layout = QGridLayout(setup); setup_layout.setContentsMargins(18, 8, 18, 8); setup_layout.setHorizontalSpacing(14); setup_layout.setVerticalSpacing(3)
+        setup_layout = QGridLayout(setup); setup_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); setup_layout.setContentsMargins(18, 8, 18, 8); setup_layout.setHorizontalSpacing(14); setup_layout.setVerticalSpacing(3)
         self.path_label = self._field_label("CUSTOM ADDONS FOLDER")
         self.source_label = self._field_label("SOURCE VERSION")
         self.target_label = self._field_label("TARGET VERSION")

@@ -4,9 +4,9 @@ import logging
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QThread, QUrl
+from PySide6.QtCore import QSettings, QThread, Qt, QUrl, Slot
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget
 
 from odoo_migrator import __version__
 from odoo_migrator.application.services import AnalysisService, MigrationService, ProjectScanService
@@ -27,6 +27,26 @@ from odoo_migrator.ui.workers.task_worker import TaskWorker
 
 
 logger = logging.getLogger("odoo_migrator.ui")
+
+
+class _ProjectScrollArea(QScrollArea):
+    """Keep the Project page at its layout minimum and scroll only when needed."""
+
+    def __init__(self, page: ProjectPage, parent=None):
+        super().__init__(parent)
+        self.setObjectName("projectScroll")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setWidgetResizable(False)
+        self.setWidget(page)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        page = self.widget()
+        if page is None:
+            return
+        minimum = page.minimumSizeHint()
+        viewport = self.viewport().size()
+        page.resize(max(viewport.width(), minimum.width()), max(viewport.height(), minimum.height()))
 
 
 def _display_version(version: str) -> str:
@@ -50,7 +70,7 @@ class MainWindow(QMainWindow):
         self.source_manager = getattr(self.analysis_service, "source_manager", None) or SourceManager()
         if getattr(self.analysis_service, "source_manager", None) is None: self.analysis_service.source_manager = self.source_manager
         self.source_selections: dict[int, SourceSelection] = {}
-        self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._log_dir = configure_logging()
+        self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._task_success_callback = None; self._task_busy_callback = None; self._log_dir = configure_logging()
         if settings is None:
             self.settings = DesktopSettings()
         elif isinstance(settings, QSettings):
@@ -61,8 +81,9 @@ class MainWindow(QMainWindow):
 
     def _build(self) -> None:
         self.steps = StepIndicator(); self.steps.setFixedWidth(216)
-        self.project_page = ProjectPage(); self.analysis_page = AnalysisPage(); self.migration_page = MigrationPage(); self.results_page = ResultsPage(); self.stack = QStackedWidget()
-        for page in (self.project_page, self.analysis_page, self.migration_page, self.results_page): self.stack.addWidget(page)
+        self.project_page = ProjectPage(); self.project_scroll = _ProjectScrollArea(self.project_page)
+        self.analysis_page = AnalysisPage(); self.migration_page = MigrationPage(); self.results_page = ResultsPage(); self.stack = QStackedWidget()
+        for page in (self.project_scroll, self.analysis_page, self.migration_page, self.results_page): self.stack.addWidget(page)
         header = QWidget(); header_layout = QHBoxLayout(header); header_layout.setContentsMargins(28, 20, 28, 12)
         identity = QVBoxLayout(); title = QLabel("Odoo Addon Migrator"); title.setObjectName("appTitle"); subtitle = QLabel(f"Local source-aware migration assistant  •  v{_display_version(__version__)}"); subtitle.setObjectName("subtitle"); identity.addWidget(title); identity.addWidget(subtitle); header_layout.addLayout(identity); header_layout.addStretch()
         about = QPushButton("About"); about.setObjectName("secondary"); about.clicked.connect(self._show_about); header_layout.addWidget(about)
@@ -196,13 +217,30 @@ class MainWindow(QMainWindow):
 
     def _start_task(self, name: str, operation, args: tuple, success, busy_callback) -> None:
         if self._busy: self._show_error("Another operation is still running."); return
-        self._busy = True; token = self.state.begin_operation(name); busy_callback(True); thread = QThread(self); worker = TaskWorker(operation, *args); worker.moveToThread(thread); thread.started.connect(worker.run); worker.stage.connect(lambda stage, percent: self._task_stage(token, stage, percent)); worker.succeeded.connect(lambda result: success(token, result)); worker.failed.connect(lambda message, details: self._task_failed(token, message, details)); worker.finished.connect(thread.quit); thread.finished.connect(worker.deleteLater); thread.finished.connect(thread.deleteLater); thread.finished.connect(lambda: self._task_finished(token, busy_callback)); self._thread, self._worker = thread, worker; thread.start()
+        self._busy = True; token = self.state.begin_operation(name); self._task_success_callback = success; self._task_busy_callback = busy_callback; busy_callback(True)
+        thread = QThread(self); worker = TaskWorker(token, operation, *args); worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.stage.connect(self._task_stage, Qt.ConnectionType.QueuedConnection)
+        worker.succeeded.connect(self._task_succeeded, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._task_failed, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._task_thread_finished, Qt.ConnectionType.QueuedConnection)
+        thread.finished.connect(thread.deleteLater)
+        self._thread, self._worker = thread, worker; thread.start()
 
+    @Slot(int, str, int)
     def _task_stage(self, token: int, stage: str, percent: int) -> None:
         if token != self.state.operation_token: return
         if self.stack.currentWidget() is self.analysis_page: self.analysis_page.set_progress(stage, percent)
         elif self.stack.currentWidget() is self.migration_page: self.migration_page.set_progress(stage, percent)
 
+    @Slot(int, object)
+    def _task_succeeded(self, token: int, result) -> None:
+        if token != self.state.operation_token or self._task_success_callback is None: return
+        self._task_success_callback(token, result)
+
+    @Slot(int, str, str)
     def _task_failed(self, token: int, message: str, details: str) -> None:
         if token != self.state.operation_token: return
         self.state.last_error = message; logger.error("Task failed: %s\n%s", message, details); self._show_error(self._friendly_error(message), details)
@@ -241,9 +279,13 @@ class MainWindow(QMainWindow):
     def _setup_verified_source(self, version: int, label: QLabel) -> None:
         selection = SourceSelection(version, SourceMode.VERIFIED_SNAPSHOT); self.source_selections[version] = selection; self.settings.save_source_selection(selection); label.setText("Verified snapshot selected")
 
-    def _task_finished(self, token: int, busy_callback) -> None:
-        if token == self.state.operation_token: self._busy = False; busy_callback(False)
+    @Slot()
+    def _task_thread_finished(self) -> None:
+        callback = self._task_busy_callback
+        self._busy = False
+        if callback: callback(False)
         self._thread = self._worker = None
+        self._task_success_callback = self._task_busy_callback = None
 
     def _show_error(self, message: str, details: str = "") -> None:
         box = QMessageBox(self); box.setIcon(QMessageBox.Critical); box.setWindowTitle("Odoo Addon Migrator"); box.setText(message)
