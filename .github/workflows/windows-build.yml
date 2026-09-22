@@ -21,8 +21,33 @@ jobs:
         run: .\scripts\build_windows.ps1 -SkipTests
       - name: Smoke test packaged executable
         run: .\dist\OdooAddonMigrator\OdooAddonMigrator.exe --smoke-test
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+      - name: Build installer
+        shell: pwsh
+        run: .\scripts\build_installer.ps1
+      - name: Install installer into isolated directory
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path $env:RUNNER_TEMP "OdooAddonMigratorInstalled"
+          if (Test-Path $installRoot) { Remove-Item -Recurse -Force $installRoot }
+          New-Item -ItemType Directory -Path $installRoot | Out-Null
+          $installer = (Resolve-Path .\dist\OdooAddonMigrator_Setup.exe).Path
+          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Installer failed with exit code $LASTEXITCODE" }
+          $installed = Join-Path $installRoot "OdooAddonMigrator.exe"
+          & $installed --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Installed EXE smoke test failed with exit code $LASTEXITCODE" }
+          $uninstaller = Join-Path $installRoot "unins000.exe"
+          if (Test-Path $uninstaller) { & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART }
       - name: Upload Windows application
         uses: actions/upload-artifact@v4
         with:
           name: OdooAddonMigrator-Windows
           path: dist/OdooAddonMigrator
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OdooAddonMigrator-Installer
+          path: dist/OdooAddonMigrator_Setup.exe

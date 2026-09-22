@@ -62,6 +62,13 @@ On Windows, install Python, Git for Windows, and the project build extras. Then 
 
 The reproducible PyInstaller onedir output is `dist\OdooAddonMigrator\OdooAddonMigrator.exe`. The installer is `dist\OdooAddonMigrator_Setup.exe` when Inno Setup is available. The application can still analyze cached sources offline; first-time source acquisition requires network access.
 
+Release testers can choose either GitHub Actions artifact:
+
+* **Portable:** download `OdooAddonMigrator-Windows`, extract it, and run `OdooAddonMigrator.exe`.
+* **Installer:** download `OdooAddonMigrator-Installer` and run `OdooAddonMigrator_Setup.exe`.
+
+The release candidate may be unsigned, so Windows SmartScreen may display a warning.
+
 ## Cache and logs
 
 Source caches are stored under `%USERPROFILE%\.odoo-addon-migrator\sources`. Desktop logs are stored under `%LOCALAPPDATA%\OdooAddonMigrator\logs`. The About dialog provides an Open Logs Folder action.
