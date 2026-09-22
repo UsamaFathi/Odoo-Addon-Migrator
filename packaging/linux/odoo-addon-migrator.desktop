@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Odoo Addon Migrator
+Comment=Source-aware migration assistant for custom Odoo addons
+Exec=/usr/bin/odoo-addon-migrator
+Icon=odoo-addon-migrator
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
+StartupWMClass=OdooAddonMigrator

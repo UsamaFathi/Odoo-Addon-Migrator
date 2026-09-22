@@ -315,3 +315,10 @@ def test_theme_does_not_paint_every_qwidget_background():
     assert "QWidget#appRoot" in APP_STYLE
     assert "QLabel { background-color: transparent; }" in APP_STYLE
     assert "QLineEdit, QComboBox { min-height: 24px; }" in APP_STYLE
+
+
+def test_git_missing_message_is_cross_platform():
+    message = MainWindow._friendly_error("Git is required to download/update Odoo Community source.")
+    assert "Git was not found" in message
+    assert "Git for Windows" not in message
+    assert "Local Exact Source" in message

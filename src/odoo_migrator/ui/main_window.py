@@ -210,7 +210,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _friendly_error(message: str) -> str:
         lowered = message.lower()
-        if "git is required" in lowered or ("git" in lowered and "not found" in lowered): return "Git for Windows was not found.\n\nOdoo Addon Migrator uses Git to download verified official Odoo Community source snapshots.\n\nInstall Git for Windows and restart the application, or use an existing source cache."
+        if "git is required" in lowered or ("git" in lowered and "not found" in lowered): return "Git was not found.\n\nOdoo Addon Migrator uses Git only when it needs to download verified official Odoo Community source snapshots.\n\nInstall Git and restart the application, or select Local Exact Source folders instead."
         return message
 
     def _confirm_source_download(self, versions: list[int]) -> bool:
