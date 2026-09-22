@@ -92,7 +92,7 @@ class DependencyModuleRenameResolver:
                 successor = self._successor(dependency, source, target)
                 if successor is None:
                     continue
-                manifest = Path(module.path) / "__manifest__.py"
+                manifest = Path(root) / module_name / "__manifest__.py"
                 updated = self._replace_dependency(manifest, dependency, successor)
                 if updated is None:
                     continue
