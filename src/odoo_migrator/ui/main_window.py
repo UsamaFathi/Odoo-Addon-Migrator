@@ -25,16 +25,15 @@ from odoo_migrator.ui.version import display_version
 from odoo_migrator.ui.widgets.step_indicator import StepIndicator
 from odoo_migrator.ui.workers.task_worker import TaskWorker
 
-
 logger = logging.getLogger("odoo_migrator.ui")
 
 
-class _ProjectScrollArea(QScrollArea):
-    """Keep the Project page at its layout minimum and scroll only when needed."""
+class _WorkflowScrollArea(QScrollArea):
+    """Keep a workflow page at its natural size and scroll instead of compressing it."""
 
-    def __init__(self, page: ProjectPage, parent=None):
+    def __init__(self, page: QWidget, name: str, parent=None):
         super().__init__(parent)
-        self.setObjectName("projectScroll")
+        self.setObjectName(name)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setWidgetResizable(False)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -84,9 +83,14 @@ class MainWindow(QMainWindow):
 
     def _build(self) -> None:
         self.steps = StepIndicator(); self.steps.setFixedWidth(216)
-        self.project_page = ProjectPage(); self.project_scroll = _ProjectScrollArea(self.project_page)
-        self.analysis_page = AnalysisPage(); self.migration_page = MigrationPage(); self.results_page = ResultsPage(); self.stack = QStackedWidget()
-        for page in (self.project_scroll, self.analysis_page, self.migration_page, self.results_page): self.stack.addWidget(page)
+        self.project_page = ProjectPage(); self.analysis_page = AnalysisPage(); self.migration_page = MigrationPage(); self.results_page = ResultsPage()
+        self.project_scroll = _WorkflowScrollArea(self.project_page, "projectScroll")
+        self.analysis_scroll = _WorkflowScrollArea(self.analysis_page, "analysisScroll")
+        self.migration_scroll = _WorkflowScrollArea(self.migration_page, "migrationScroll")
+        self.results_scroll = _WorkflowScrollArea(self.results_page, "resultsScroll")
+        self.page_scrolls = (self.project_scroll, self.analysis_scroll, self.migration_scroll, self.results_scroll)
+        self.stack = QStackedWidget()
+        for page in self.page_scrolls: self.stack.addWidget(page)
         header = QWidget(); header_layout = QHBoxLayout(header); header_layout.setContentsMargins(28, 20, 28, 12)
         identity = QVBoxLayout(); title = QLabel("Odoo Addon Migrator"); title.setObjectName("appTitle"); subtitle = QLabel(f"Local source-aware migration assistant  •  v{_display_version(__version__)}"); subtitle.setObjectName("subtitle"); identity.addWidget(title); identity.addWidget(subtitle); header_layout.addLayout(identity); header_layout.addStretch()
         about = QPushButton("About"); about.setObjectName("secondary"); about.clicked.connect(self._show_about); header_layout.addWidget(about)
@@ -118,6 +122,7 @@ class MainWindow(QMainWindow):
 
     def _show_page(self, index: int, step: int) -> None:
         self.stack.setCurrentIndex(index); self.steps.setCurrent(step)
+        if 0 <= index < len(self.page_scrolls): self.page_scrolls[index].verticalScrollBar().setValue(0)
 
     def _refresh_targets(self) -> None:
         source = self.project_page.selected_source()
@@ -235,8 +240,8 @@ class MainWindow(QMainWindow):
     @Slot(int, str, int)
     def _task_stage(self, token: int, stage: str, percent: int) -> None:
         if token != self.state.operation_token: return
-        if self.stack.currentWidget() is self.analysis_page: self.analysis_page.set_progress(stage, percent)
-        elif self.stack.currentWidget() is self.migration_page: self.migration_page.set_progress(stage, percent)
+        if self.stack.currentWidget() is self.analysis_scroll: self.analysis_page.set_progress(stage, percent)
+        elif self.stack.currentWidget() is self.migration_scroll: self.migration_page.set_progress(stage, percent)
 
     @Slot(int, object)
     def _task_succeeded(self, token: int, result) -> None:

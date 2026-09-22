@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QSettings, QThread, Qt
 from PySide6.QtGui import QPixmap, QWheelEvent
-from PySide6.QtWidgets import QApplication, QGridLayout, QLabel
+from PySide6.QtWidgets import QApplication, QGridLayout, QLabel, QScrollArea
 
 from odoo_migrator.analysis.compat import Finding, Severity
 from odoo_migrator.analysis.project import scan_custom_addons
@@ -336,9 +336,90 @@ def test_project_page_scrolls_with_mouse_wheel_without_changing_version(qapp):
     window.close()
 
 
+def test_every_workflow_page_uses_a_natural_height_scroll_container(qapp):
+    window = MainWindow()
+    window.resize(1366, 768)
+    window.show()
+    qapp.processEvents()
+
+    assert all(isinstance(page, QScrollArea) for page in window.page_scrolls)
+    assert [page.widget() for page in window.page_scrolls] == [
+        window.project_page,
+        window.analysis_page,
+        window.migration_page,
+        window.results_page,
+    ]
+    for index, scroll in enumerate(window.page_scrolls):
+        window._show_page(index, min(index, 4))
+        qapp.processEvents()
+        page = scroll.widget()
+        assert page.height() >= scroll.viewport().height()
+        assert page.width() >= scroll.viewport().width()
+        assert scroll.horizontalScrollBar().maximum() == 0
+    assert window.analysis_scroll.verticalScrollBar().maximum() > 0
+    window.close()
+
+
+def test_remaining_workflow_pages_do_not_overlap_when_rendered(qapp):
+    window = MainWindow()
+    window.resize(1366, 768)
+    window.show()
+
+    window._show_page(1, 2)
+    qapp.processEvents()
+    analysis = window.analysis_page
+    assert analysis.progress_card.geometry().bottom() < analysis.cards["addons"].geometry().top()
+    assert analysis.cards["warning"].geometry().bottom() < analysis.fixes_label.geometry().top()
+    assert analysis.fixes.geometry().bottom() < analysis.review_splitter.geometry().top()
+
+    window._show_page(2, 3)
+    qapp.processEvents()
+    migration = window.migration_page
+    assert migration.safety.geometry().bottom() < migration.progress_card.geometry().top()
+    assert migration.stage.geometry().bottom() < migration.destination.geometry().top()
+    assert migration.destination.geometry().bottom() < migration.progress.geometry().top()
+
+    window._show_page(3, 4)
+    qapp.processEvents()
+    results = window.results_page
+    assert results.validation.geometry().bottom() < results.summary_card.geometry().top()
+    assert results.summary_card.geometry().bottom() < results.metrics["fixes"].geometry().top()
+    assert results.metrics["fixes"].geometry().bottom() < results.output_button.geometry().top()
+    assert results.output_button.geometry().bottom() < results.new_button.geometry().top()
+    window.close()
+
+
+def test_analysis_page_scrolls_with_mouse_wheel(qapp):
+    window = MainWindow()
+    window.resize(1366, 768)
+    window.show()
+    window._show_page(1, 2)
+    qapp.processEvents()
+    scroll = window.analysis_scroll.verticalScrollBar()
+    assert scroll.maximum() > 0
+    scroll.setValue(0)
+    position = QPointF(window.analysis_scroll.viewport().rect().center())
+    global_position = QPointF(window.analysis_scroll.viewport().mapToGlobal(window.analysis_scroll.viewport().rect().center()))
+    wheel = QWheelEvent(position, global_position, QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False)
+    qapp.sendEvent(window.analysis_scroll.viewport(), wheel)
+    qapp.processEvents()
+    assert scroll.value() > 0
+    window.close()
+
+
 def test_native_capture_helper_renders_project_page(qapp, tmp_path: Path):
     output = tmp_path / "project-page.png"
     assert capture_ui(qapp, output)
+    image = QPixmap(str(output))
+    assert not image.isNull()
+    assert image.width() >= 1366
+    assert image.height() >= 768
+
+
+@pytest.mark.parametrize("page_name", ["analysis", "migration", "results"])
+def test_native_capture_helper_renders_remaining_pages(qapp, tmp_path: Path, page_name: str):
+    output = tmp_path / f"{page_name}-page.png"
+    assert capture_ui(qapp, output, page_name)
     image = QPixmap(str(output))
     assert not image.isNull()
     assert image.width() >= 1366

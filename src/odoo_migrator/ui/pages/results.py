@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QLabel, QLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from odoo_migrator.ui.widgets.design_system import MetricCard, SectionHeader, StatusBadge, SurfaceCard
 
@@ -18,15 +18,24 @@ class ResultsPage(QWidget):
         self.validation = StatusBadge("Static validation pending", "badgeInfo")
         self.metrics = {key: MetricCard(label) for key, label in (("fixes", "Automatic fixes"), ("review", "Manual review"), ("blockers", "Blockers"))}
         self.report = QPushButton("Open migration report"); self.report.clicked.connect(self.openReport); self.diff = QPushButton("Review changes / diff"); self.diff.clicked.connect(self.openDiff)
-        output = QPushButton("Open output folder"); output.clicked.connect(self.openOutput); new = QPushButton("Start another project"); new.setObjectName("secondary"); new.clicked.connect(self.newProject)
-        self._build(output, new)
+        self.output_button = QPushButton("Open output folder"); self.output_button.clicked.connect(self.openOutput)
+        self.new_button = QPushButton("Start another project"); self.new_button.setObjectName("secondary"); self.new_button.clicked.connect(self.newProject)
+        self._build()
 
-    def _build(self, output, new) -> None:
-        layout = QVBoxLayout(self); layout.setContentsMargins(28, 24, 28, 20); layout.setSpacing(14)
+    def _build(self) -> None:
+        layout = QVBoxLayout(self); layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); layout.setContentsMargins(28, 24, 28, 28); layout.setSpacing(16)
         layout.addWidget(SectionHeader("Migration complete", "Review the output and validate it on the target Odoo installation before production use.")); layout.addWidget(self.validation)
-        card = SurfaceCard(); inner = QVBoxLayout(card); inner.setContentsMargins(18, 16, 18, 16); inner.addWidget(self.summary); inner.addWidget(self.output); layout.addWidget(card)
-        cards = QHBoxLayout(); [cards.addWidget(card) for card in self.metrics.values()]; layout.addLayout(cards)
-        buttons = QHBoxLayout(); buttons.addWidget(output); buttons.addWidget(self.report); buttons.addWidget(self.diff); buttons.addStretch(); buttons.addWidget(new); layout.addLayout(buttons); layout.addStretch()
+        self.summary_card = SurfaceCard(); self.summary_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        inner = QVBoxLayout(self.summary_card); inner.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); inner.setContentsMargins(20, 18, 20, 18); inner.setSpacing(10); inner.addWidget(self.summary); inner.addWidget(self.output); layout.addWidget(self.summary_card)
+        cards = QGridLayout(); cards.setHorizontalSpacing(10); cards.setVerticalSpacing(10)
+        for column, metric in enumerate(self.metrics.values()):
+            metric.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            cards.addWidget(metric, 0, column); cards.setColumnStretch(column, 1)
+        layout.addLayout(cards)
+        buttons = QGridLayout(); buttons.setHorizontalSpacing(10); buttons.setVerticalSpacing(10)
+        buttons.addWidget(self.output_button, 0, 0); buttons.addWidget(self.report, 0, 1); buttons.addWidget(self.diff, 0, 2)
+        buttons.addWidget(self.new_button, 1, 2); buttons.setColumnStretch(0, 1); buttons.setColumnStretch(1, 1); buttons.setColumnStretch(2, 1)
+        layout.addLayout(buttons); layout.addStretch()
 
     def set_result(self, result, analysis) -> None:
         state = getattr(result, "validation_state", None); issues = getattr(result, "validation_issues", ())

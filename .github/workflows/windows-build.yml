@@ -21,22 +21,26 @@ jobs:
         run: .\scripts\build_windows.ps1 -SkipTests
       - name: Smoke test packaged executable
         run: .\dist\OdooAddonMigrator\OdooAddonMigrator.exe --smoke-test
-      - name: Capture native Windows Project page
+      - name: Capture native Windows workflow pages
         shell: pwsh
         run: |
           $captureRoot = Join-Path $env:GITHUB_WORKSPACE "gui-captures"
           New-Item -ItemType Directory -Path $captureRoot -Force | Out-Null
-          $env:ODOO_MIGRATOR_UI_CAPTURE = Join-Path $captureRoot "portable-project-1366x768.png"
-          $captureProcess = Start-Process `
-              -FilePath (Resolve-Path .\dist\OdooAddonMigrator\OdooAddonMigrator.exe).Path `
-              -ArgumentList "--capture-ui" `
-              -Wait `
-              -PassThru
-          if ($captureProcess.ExitCode -ne 0) {
-              throw "Portable UI capture failed with exit code $($captureProcess.ExitCode)"
-          }
-          if (-not (Test-Path -LiteralPath $env:ODOO_MIGRATOR_UI_CAPTURE)) {
-              throw "Portable UI capture was not created: $env:ODOO_MIGRATOR_UI_CAPTURE"
+          $portable = (Resolve-Path .\dist\OdooAddonMigrator\OdooAddonMigrator.exe).Path
+          foreach ($page in @("project", "analysis", "migration", "results")) {
+              $env:ODOO_MIGRATOR_UI_PAGE = $page
+              $env:ODOO_MIGRATOR_UI_CAPTURE = Join-Path $captureRoot "portable-$page-1366x768.png"
+              $captureProcess = Start-Process `
+                  -FilePath $portable `
+                  -ArgumentList "--capture-ui" `
+                  -Wait `
+                  -PassThru
+              if ($captureProcess.ExitCode -ne 0) {
+                  throw "Portable $page UI capture failed with exit code $($captureProcess.ExitCode)"
+              }
+              if (-not (Test-Path -LiteralPath $env:ODOO_MIGRATOR_UI_CAPTURE)) {
+                  throw "Portable UI capture was not created: $env:ODOO_MIGRATOR_UI_CAPTURE"
+              }
           }
       - name: Install Inno Setup
         shell: pwsh

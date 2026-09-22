@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QLabel, QFormLayout, QGroupBox, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QFormLayout, QGroupBox, QLayout, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 
 class FindingDetails(QWidget):
@@ -17,12 +17,12 @@ class FindingDetails(QWidget):
                             ("rule_id", "Rule ID"), ("path", "File"), ("line", "Line"), ("object_name", "Object"),
                             ("source_state", "Source state"), ("target_state", "Target state")):
             value = QLabel("—"); value.setWordWrap(True); self.fields[name] = value; form.addRow(label + ":", value)
-        self.problem = QTextEdit(); self.problem.setReadOnly(True); self.problem.setMaximumHeight(90)
-        self.action = QTextEdit(); self.action.setReadOnly(True); self.action.setMaximumHeight(90)
+        self.problem = QTextEdit(); self.problem.setReadOnly(True); self.problem.setMinimumHeight(84)
+        self.action = QTextEdit(); self.action.setReadOnly(True); self.action.setMinimumHeight(84)
         self.open_button = QPushButton("Open File Location")
         self.open_button.setEnabled(False)
         self.open_button.clicked.connect(lambda: self.openLocation.emit(self._safe_path()))
-        layout = QVBoxLayout(self); group = QGroupBox("Finding details"); group.setLayout(form); layout.addWidget(group)
+        layout = QVBoxLayout(self); layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); layout.setContentsMargins(8, 0, 0, 0); layout.setSpacing(8); group = QGroupBox("Finding details"); group.setLayout(form); layout.addWidget(group)
         layout.addWidget(QLabel("Problem")); layout.addWidget(self.problem); layout.addWidget(QLabel("Suggested action")); layout.addWidget(self.action)
         layout.addWidget(self.open_button)
 

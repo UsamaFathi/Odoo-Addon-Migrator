@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QListWidget, QPushButton, QProgressBar, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QLayout, QListWidget, QPushButton, QProgressBar, QSizePolicy, QSplitter, QVBoxLayout, QWidget
 
 from odoo_migrator.ui.models.application_state import finding_counts
 from odoo_migrator.ui.widgets.design_system import MetricCard, SectionHeader, StatusBadge, SurfaceCard
@@ -20,21 +20,25 @@ class AnalysisPage(QWidget):
         self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.setValue(0)
         self.cards = {name: MetricCard(title) for name, title in (("addons", "Modules"), ("auto_fix", "Auto fixes"), ("blocker", "Blockers"), ("review_required", "Review required"), ("warning", "Warnings"), ("steps", "Migration steps"))}
         self.findings = FindingsTable(); self.details = FindingDetails(); self.findings.findingSelected.connect(self.details.setFinding)
-        self.fixes = QListWidget(); self.fixes.setMaximumHeight(112)
+        self.fixes = QListWidget(); self.fixes.setMinimumHeight(118)
         self.blocker_banner = StatusBadge("", "badgeDanger"); self.blocker_banner.hide()
         self.migrate_button = QPushButton("Start migration  →"); self.migrate_button.clicked.connect(self.migrateRequested); self.migrate_button.setEnabled(False)
         self.back_button = QPushButton("← Back to project"); self.back_button.setObjectName("secondary"); self.back_button.clicked.connect(self.backRequested)
         self._build()
 
     def _build(self) -> None:
-        layout = QVBoxLayout(self); layout.setContentsMargins(28, 24, 28, 20); layout.setSpacing(12)
+        layout = QVBoxLayout(self); layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); layout.setContentsMargins(28, 24, 28, 28); layout.setSpacing(16)
         layout.addWidget(SectionHeader("Analysis & review", "Source-aware findings, safe fixes, and the evidence behind your migration.")); layout.addWidget(self.context)
-        progress_card = SurfaceCard(); p = QVBoxLayout(progress_card); p.setContentsMargins(16, 12, 16, 12); p.addWidget(self.stage); p.addWidget(self.progress); layout.addWidget(progress_card)
-        cards = QHBoxLayout(); cards.setSpacing(8)
-        for card in self.cards.values(): cards.addWidget(card)
+        self.progress_card = SurfaceCard(); p = QVBoxLayout(self.progress_card); p.setContentsMargins(16, 12, 16, 12); p.setSpacing(10); p.addWidget(self.stage); p.addWidget(self.progress); layout.addWidget(self.progress_card)
+        cards = QGridLayout(); cards.setHorizontalSpacing(10); cards.setVerticalSpacing(10)
+        for index, card in enumerate(self.cards.values()):
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            cards.addWidget(card, index // 3, index % 3)
+        for column in range(3): cards.setColumnStretch(column, 1)
         layout.addLayout(cards); layout.addWidget(self.blocker_banner)
-        fixes_header = QHBoxLayout(); label = QLabel("Automatic fixes"); label.setObjectName("sectionTitle"); fixes_header.addWidget(label); fixes_header.addStretch(); fixes_header.addWidget(QLabel("Only deterministic source-backed changes are applied.")); layout.addLayout(fixes_header); layout.addWidget(self.fixes)
-        splitter = QSplitter(); splitter.addWidget(self.findings); splitter.addWidget(self.details); splitter.setStretchFactor(0, 3); splitter.setStretchFactor(1, 2); layout.addWidget(splitter, 1)
+        fixes_header = QHBoxLayout(); self.fixes_label = QLabel("Automatic fixes"); self.fixes_label.setObjectName("sectionTitle"); fixes_header.addWidget(self.fixes_label); fixes_header.addStretch(); fixes_header.addWidget(QLabel("Only deterministic source-backed changes are applied.")); layout.addLayout(fixes_header); layout.addWidget(self.fixes)
+        self.review_splitter = QSplitter(); self.review_splitter.setChildrenCollapsible(False); self.review_splitter.setMinimumHeight(390)
+        self.review_splitter.addWidget(self.findings); self.review_splitter.addWidget(self.details); self.review_splitter.setStretchFactor(0, 3); self.review_splitter.setStretchFactor(1, 2); layout.addWidget(self.review_splitter, 1)
         buttons = QHBoxLayout(); buttons.addWidget(self.back_button); buttons.addStretch(); buttons.addWidget(self.migrate_button); layout.addLayout(buttons)
 
     def set_context(self, source: int, target: int, root) -> None:

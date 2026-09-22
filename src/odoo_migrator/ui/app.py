@@ -42,8 +42,8 @@ def smoke_test(app) -> bool:
         return passed
 
 
-def capture_ui(app, output: Path) -> bool:
-    """Render the Project page through the active Qt platform and save it."""
+def capture_ui(app, output: Path, page_name: str = "project") -> bool:
+    """Render one workflow page through the active Qt platform and save it."""
     from PySide6.QtCore import QSettings
 
     from odoo_migrator.ui.main_window import MainWindow
@@ -56,6 +56,23 @@ def capture_ui(app, output: Path) -> bool:
         window = MainWindow(settings=settings)
         window.resize(1366, 768)
         window.show()
+        app.processEvents()
+        page_indexes = {"project": (0, 0), "analysis": (1, 2), "migration": (2, 3), "results": (3, 4)}
+        if page_name not in page_indexes:
+            window.close()
+            return False
+        if page_name == "analysis":
+            window.analysis_page.set_context(18, 19, Path("C:/Projects/custom_addons"))
+            window.analysis_page.set_progress("Reviewing compatibility findings", 72)
+        elif page_name == "migration":
+            window.migration_page.set_destination(Path("C:/Projects/custom_addons_19"))
+            window.migration_page.set_progress("Applying Odoo 18 to 19 fixes", 58)
+        elif page_name == "results":
+            from types import SimpleNamespace
+            result = SimpleNamespace(changes=(1, 2, 3), output=Path("C:/Projects/custom_addons_19"), metadata_path=None, validation_state="passed", validation_issues=())
+            analysis = SimpleNamespace(review_required=(1, 2), blockers=(), plan=SimpleNamespace(source=18, target=19))
+            window.results_page.set_result(result, analysis)
+        window._show_page(*page_indexes[page_name])
         app.processEvents()
         window.repaint()
         app.processEvents()
@@ -86,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if smoke_test(app) else 1
     if "--capture-ui" in argv:
         output = Path(os.environ.get("ODOO_MIGRATOR_UI_CAPTURE", "OdooAddonMigrator-Project-1366x768.png"))
-        if not capture_ui(app, output):
+        page_name = os.environ.get("ODOO_MIGRATOR_UI_PAGE", "project").casefold()
+        if not capture_ui(app, output, page_name):
             print(f"Unable to save UI capture: {output}", file=sys.stderr)
             return 1
         print(str(output.resolve()))

@@ -1,5 +1,5 @@
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLineEdit, QTableView, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QGridLayout, QLineEdit, QTableView, QVBoxLayout, QWidget
 
 from odoo_migrator.ui.models.findings_model import FindingsModel
 
@@ -17,11 +17,14 @@ class FindingsTable(QWidget):
         self.step = QComboBox(); self.step.addItem("All")
         self.addon = QComboBox(); self.addon.addItem("All")
         self.category = QComboBox(); self.category.addItem("All")
-        filters = QHBoxLayout(); filters.addWidget(self.search, 1); filters.addWidget(self.severity); filters.addWidget(self.step); filters.addWidget(self.addon)
-        filters.addWidget(self.category)
+        filters = QGridLayout(); filters.setHorizontalSpacing(8); filters.setVerticalSpacing(8)
+        filters.addWidget(self.search, 0, 0, 1, 4)
+        filters.addWidget(self.severity, 1, 0); filters.addWidget(self.step, 1, 1); filters.addWidget(self.addon, 1, 2); filters.addWidget(self.category, 1, 3)
+        for column in range(4): filters.setColumnStretch(column, 1)
         self.table = QTableView(); self.table.setModel(self.model); self.table.setSortingEnabled(True); self.table.setAlternatingRowColors(True)
+        self.table.setMinimumHeight(270)
         self.table.setSelectionBehavior(QTableView.SelectRows); self.table.horizontalHeader().setStretchLastSection(True)
-        layout = QVBoxLayout(self); layout.addLayout(filters); layout.addWidget(self.table)
+        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(10); layout.addLayout(filters); layout.addWidget(self.table)
         self.search.textChanged.connect(lambda value: self.model.setFilter(search=value))
         self.severity.currentIndexChanged.connect(lambda index: self.model.setFilter(severity=self.severity.itemData(index)))
         self.step.currentTextChanged.connect(lambda value: self.model.setFilter(step=value))
