@@ -1,0 +1,94 @@
+name: Publish v1.0.0-rc.1
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.event.head_commit.message == 'chore: publish v1.0.0-rc.1 release'
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: v1.0.0-rc.1
+      RELEASE_TARGET: bce3e01b8820e3eb1746321b471762c1ab10dd19
+      ARTIFACT_RUN_ID: "35695187502"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+              Write-Host "Release $env:RELEASE_TAG already exists."
+              exit 0
+          }
+
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          New-Item -ItemType Directory -Path release-assets\portable -Force | Out-Null
+          New-Item -ItemType Directory -Path release-assets\installer -Force | Out-Null
+
+          gh run download $env:ARTIFACT_RUN_ID --repo $env:GITHUB_REPOSITORY `
+              --name OdooAddonMigrator-Windows `
+              --dir release-assets\portable
+
+          gh run download $env:ARTIFACT_RUN_ID --repo $env:GITHUB_REPOSITORY `
+              --name OdooAddonMigrator-Installer `
+              --dir release-assets\installer
+
+          $installer = Get-ChildItem release-assets\installer -Filter OdooAddonMigrator_Setup.exe -Recurse |
+              Select-Object -First 1
+          if (-not $installer) {
+              throw "OdooAddonMigrator_Setup.exe was not found in the installer artifact."
+          }
+
+          Copy-Item $installer.FullName release-assets\OdooAddonMigrator_Setup.exe -Force
+
+          $portableZip = "release-assets\OdooAddonMigrator-Windows.zip"
+          if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
+          Compress-Archive -Path release-assets\portable\* -DestinationPath $portableZip -CompressionLevel Optimal
+
+          @"
+          ## Odoo Addon Migrator v1.0.0-rc.1
+
+          First public release candidate of the Windows desktop application.
+
+          ### Download
+          - **OdooAddonMigrator_Setup.exe** — recommended Windows installer.
+          - **OdooAddonMigrator-Windows.zip** — portable build; extract it and run OdooAddonMigrator.exe.
+
+          ### Highlights
+          - Professional PySide6 desktop GUI.
+          - Source-aware custom-addon migration across Odoo 14 → 19.
+          - Registry-driven multi-hop migrations.
+          - Verified official Odoo Community source snapshots.
+          - Blocker / Review Required / Warning analysis.
+          - Conservative automatic fixes with migration-step attribution.
+          - Local migration report and unified diff.
+          - Original custom addons remain untouched.
+          - Static validation after migration.
+
+          ### Important
+          This is a **release candidate**. Static validation does not guarantee runtime or production compatibility. Install and business-workflow testing on the target Odoo version are still required.
+
+          The Windows build is currently unsigned, so Microsoft SmartScreen may display a warning.
+
+          Independent migration utility. Not affiliated with Odoo S.A.
+          "@ | Set-Content release-notes.md -Encoding UTF8
+
+          gh release create $env:RELEASE_TAG `
+              release-assets\OdooAddonMigrator_Setup.exe `
+              release-assets\OdooAddonMigrator-Windows.zip `
+              --repo $env:GITHUB_REPOSITORY `
+              --target $env:RELEASE_TARGET `
+              --title "Odoo Addon Migrator v1.0.0-rc.1" `
+              --notes-file release-notes.md `
+              --prerelease
