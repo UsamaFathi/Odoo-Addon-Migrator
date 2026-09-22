@@ -218,5 +218,60 @@ class ActionViewModeTreeToListRule(MigrationRule):
         )
 
 
+
+_XPATH_EXPR_ATTR = re.compile(
+    r"(?P<prefix><xpath\b[^<>]*?\bexpr\s*=\s*)(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
+    re.DOTALL,
+)
+_XPATH_TREE_NODE = re.compile(r"(?P<prefix>(?:^|/|::))tree(?=(?:/|\[|$))")
+
+
+def _xpath_tree_to_list_replacements(data: bytes) -> list[_Replacement]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    replacements: list[_Replacement] = []
+    for match in _XPATH_EXPR_ATTR.finditer(text):
+        expression = match.group("value")
+        rewritten = _XPATH_TREE_NODE.sub(lambda item: item.group("prefix") + "list", expression)
+        if rewritten == expression:
+            continue
+        start_chars = match.start("value")
+        end_chars = match.end("value")
+        start = len(text[:start_chars].encode("utf-8"))
+        end = len(text[:end_chars].encode("utf-8"))
+        replacements.append(_Replacement(start, end, rewritten.encode("utf-8")))
+    return replacements
+
+
+class XPathTreeToListRule(MigrationRule):
+    """Convert XPath node tests that target Odoo 17 tree views to Odoo 18 list views."""
+
+    def __init__(self):
+        super().__init__(
+            17,
+            18,
+            "xml.xpath.tree_to_list.17_to_18",
+            "xml",
+            Classification.SAFE_AUTO_FIX,
+            "Rename XPath tree node tests to list for Odoo 18 inherited views.",
+            (
+                "The edit is restricted to expr attributes on xpath elements and only replaces "
+                "the XPath node-test token 'tree' after '/' or '::'. String literals and attribute "
+                "names are not rewritten."
+            ),
+            True,
+        )
+
+    def apply(self, root: Path, dry_run: bool = False) -> list[Change]:
+        return _apply_xml_rule(
+            root,
+            self.rule_id,
+            _xpath_tree_to_list_replacements,
+            "Converted XPath tree node tests to list without rewriting unrelated XML.",
+            dry_run,
+        )
+
 def analyze(custom: OdooIndex, source: OdooIndex, target: OdooIndex, diff: SourceDiff) -> list[Finding]:
     return analyze_views(custom, source, target, target_version=18, migration_step="17_to_18")
