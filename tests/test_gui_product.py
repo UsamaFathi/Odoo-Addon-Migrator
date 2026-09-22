@@ -306,3 +306,11 @@ def test_desktop_workflow_uses_real_services_and_preserves_input(qapp, tmp_path:
     assert "19.0.1.0.0" in (output / "demo" / "__manifest__.py").read_text(encoding="utf-8")
     assert manifest.read_bytes() == before
     window.close()
+
+
+def test_theme_does_not_paint_every_qwidget_background():
+    from odoo_migrator.ui.theme import APP_STYLE
+    assert "QMainWindow, QWidget { background" not in APP_STYLE
+    assert "QWidget#appRoot" in APP_STYLE
+    assert "QLabel { background-color: transparent; }" in APP_STYLE
+    assert "QLineEdit, QComboBox { min-height: 24px; }" in APP_STYLE
