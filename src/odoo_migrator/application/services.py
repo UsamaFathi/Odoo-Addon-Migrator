@@ -26,6 +26,8 @@ class AnalysisResult:
     findings: tuple[Finding, ...]
     auto_fix_candidates: tuple["AutoFixCandidate", ...] = ()
     steps: tuple["AdjacentAnalysis", ...] = ()
+    resolved_findings: tuple[Finding, ...] = ()
+    resolution_passes: int = 0
 
     @property
     def blockers(self) -> tuple[Finding, ...]:
@@ -68,6 +70,9 @@ class AdjacentAnalysis:
     auto_fix_candidates: tuple[AutoFixCandidate, ...] = ()
     custom_fingerprint_before: str = ""
     custom_fingerprint_after: str = ""
+    initial_findings: tuple[Finding, ...] = ()
+    resolved_findings: tuple[Finding, ...] = ()
+    resolution_passes: int = 0
 
 
 class AnalysisService:
@@ -96,6 +101,22 @@ class AnalysisService:
                 value = None
             statuses[version] = value
         return statuses
+
+    def _collect_step_findings(self, custom_index, source_index, target_index, diff, pack, step_key: str,
+                               report: Callable[[str, int], None] | None = None) -> tuple[Finding, ...]:
+        findings = [
+            replace(item, migration_step=item.migration_step or step_key)
+            for item in compare_custom_to_target(custom_index, source_index, target_index)
+        ]
+        analyzer_names = ("Python / ORM", "Dependencies", "XML / views", "Security", "Frontend", "Reports / QWeb")
+        for index, analyzer in enumerate(pack.analyzers):
+            if report:
+                report(f"Analyzing {analyzer_names[index] if index < len(analyzer_names) else 'compatibility'} ({step_key})", 45 + index * 7)
+            findings.extend(
+                replace(item, migration_step=item.migration_step or step_key)
+                for item in analyzer(custom_index, source_index, target_index, diff)
+            )
+        return deduplicate_findings(findings)
 
     def analyze(self, root: Path, source: int, target: int, manager: SourceManager | None = None,
                 progress: Callable[[str, int], None] | None = None,
@@ -138,37 +159,96 @@ class AnalysisService:
                 source_version=version,
             )
         report("Official source indexes ready", 42)
-        findings = []; step_results = []; candidates = []; engine = MigrationEngine(self.registry)
+        findings = []
+        resolved_findings = []
+        step_results = []
+        candidates = []
+        candidate_keys: set[tuple[str, str, str]] = set()
+        total_resolution_passes = 0
         with tempfile.TemporaryDirectory(prefix="odoo-migrator-plan-") as staging:
-            planning_root = Path(staging) / "project"; shutil.copytree(scan.root, planning_root)
+            planning_root = Path(staging) / "project"
+            shutil.copytree(scan.root, planning_root)
+            cache_dir = Path(staging) / "indexes"
             for step in plan.steps:
                 step_key = step.key
-                custom_index = indexer.index(planning_root, cache_dir=Path(staging) / "indexes")
                 before = indexer.project_fingerprint(planning_root)
                 diff = compare_indexes(indexes[step.source], indexes[step.target])
-                step_findings = [replace(item, migration_step=item.migration_step or step_key)
-                                 for item in compare_custom_to_target(custom_index, indexes[step.source], indexes[step.target])]
                 pack = self.registry.require(step.source, step.target)
-                analyzer_names = ("Python / ORM", "Dependencies", "XML / views", "Security", "Frontend", "Reports / QWeb")
-                for index, analyzer in enumerate(pack.analyzers):
-                    report(f"Analyzing {analyzer_names[index] if index < len(analyzer_names) else 'compatibility'} ({step.key})", 45 + index * 7)
-                    step_findings.extend(replace(item, migration_step=item.migration_step or step_key)
-                                         for item in analyzer(custom_index, indexes[step.source], indexes[step.target], diff))
+
+                custom_index = indexer.index(planning_root, cache_dir=cache_dir)
+                initial_findings = self._collect_step_findings(
+                    custom_index, indexes[step.source], indexes[step.target], diff, pack, step_key, report
+                )
+
                 step_candidates = []
-                report(f"Planning safe automatic fixes ({step.key})", 88)
-                for rule in pack.rule_factory():
-                    changes = rule.apply(planning_root, dry_run=True)
-                    if rule.automatic:
-                        proposed = [AutoFixCandidate(change.rule_id, change.path.relative_to(planning_root).as_posix(), change.description, step_key) for change in changes]
-                        candidates.extend(proposed); step_candidates.extend(proposed)
+                passes = 0
+                for pass_index in range(3):
+                    report(f"Applying automatic fixes ({step_key}) · pass {pass_index + 1}", min(94, 82 + pass_index * 4))
+                    round_before = indexer.project_fingerprint(planning_root)
+                    changed = False
+                    for rule in pack.rule_factory():
+                        if not rule.automatic:
+                            continue
+                        proposed_changes = rule.apply(planning_root, dry_run=True)
+                        if not proposed_changes:
+                            continue
+                        changed = True
+                        for change in proposed_changes:
+                            relative = change.path.relative_to(planning_root).as_posix()
+                            key = (change.rule_id, relative, step_key)
+                            if key in candidate_keys:
+                                continue
+                            candidate_keys.add(key)
+                            candidate = AutoFixCandidate(change.rule_id, relative, change.description, step_key)
+                            candidates.append(candidate)
+                            step_candidates.append(candidate)
                         rule.apply(planning_root, dry_run=False)
+                    round_after = indexer.project_fingerprint(planning_root)
+                    if not changed or round_after == round_before:
+                        break
+                    passes += 1
+
+                total_resolution_passes += passes
                 after = indexer.project_fingerprint(planning_root)
-                step_findings = list(deduplicate_findings(step_findings)); findings.extend(step_findings)
-                step_results.append(AdjacentAnalysis(step.source, step.target, snapshots[step.source], snapshots[step.target], diff,
-                    tuple(step_findings), tuple(step_candidates), before, after))
+                post_index = indexer.index(planning_root, cache_dir=cache_dir)
+                post_findings = self._collect_step_findings(
+                    post_index, indexes[step.source], indexes[step.target], diff, pack, step_key
+                )
+                remaining_identities = {finding.identity for finding in post_findings}
+                resolved = tuple(
+                    finding for finding in initial_findings
+                    if finding.identity not in remaining_identities
+                )
+                resolved_findings.extend(resolved)
+                findings.extend(post_findings)
+                step_results.append(AdjacentAnalysis(
+                    step.source,
+                    step.target,
+                    snapshots[step.source],
+                    snapshots[step.target],
+                    diff,
+                    tuple(post_findings),
+                    tuple(step_candidates),
+                    before,
+                    after,
+                    tuple(initial_findings),
+                    resolved,
+                    passes,
+                ))
         findings = deduplicate_findings(findings)
+        resolved_findings = deduplicate_findings(resolved_findings)
         report("Analysis complete", 100)
-        return AnalysisResult(scan, plan, snapshots[source], snapshots[target], findings, tuple(candidates), tuple(step_results))
+        return AnalysisResult(
+            scan,
+            plan,
+            snapshots[source],
+            snapshots[target],
+            findings,
+            tuple(candidates),
+            tuple(step_results),
+            tuple(resolved_findings),
+            total_resolution_passes,
+        )
 
 
 class MigrationService:
