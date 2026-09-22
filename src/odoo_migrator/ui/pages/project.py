@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, Signal
-from PySide6.QtWidgets import QAbstractScrollArea, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractScrollArea, QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
 
 from odoo_migrator.ui.models.addons_model import AddonsModel
 from odoo_migrator.ui.models.application_state import suggested_output_path
@@ -74,6 +74,8 @@ class ProjectPage(QWidget):
         self.model = AddonsModel(self); self.modules = QTableView(); self.modules.setModel(self.model); self.modules.setSortingEnabled(True); self.modules.setAlternatingRowColors(True)
         self.modules.setSelectionBehavior(QTableView.SelectRows); self.modules.verticalHeader().setDefaultSectionSize(36); self.modules.horizontalHeader().setStretchLastSection(True)
         self.module_search = QLineEdit(); self.module_search.setPlaceholderText("Filter detected addons…"); self.module_search.textChanged.connect(self._filter_modules)
+        self.autonomous_mode = QCheckBox("Continue automatically when blockers are resolved"); self.autonomous_mode.setChecked(True)
+        self.autonomous_mode.setToolTip("When enabled, a clean autonomous analysis continues directly into migration.")
         self.analyze_button = QPushButton("Analyze & auto-resolve  →"); self.analyze_button.clicked.connect(self.analyzeRequested); self.analyze_button.setEnabled(False)
         self._build()
         self._set_controls_enabled(False)
@@ -105,7 +107,7 @@ class ProjectPage(QWidget):
         main.addWidget(self.sources, 0)
         table_header = QHBoxLayout(); title = QLabel("Detected addons"); title.setObjectName("sectionTitle"); table_header.addWidget(title); table_header.addStretch(); table_header.addWidget(self.module_search); main.addLayout(table_header, 0)
         main.addWidget(self.modules, 1)
-        action_bar = QHBoxLayout(); action_bar.addStretch(); action_bar.addWidget(self.analyze_button); main.addLayout(action_bar, 0)
+        action_bar = QHBoxLayout(); action_bar.addWidget(self.autonomous_mode); action_bar.addStretch(); action_bar.addWidget(self.analyze_button); main.addLayout(action_bar, 0)
 
     @staticmethod
     def _field_label(text: str) -> QLabel:
@@ -136,6 +138,9 @@ class ProjectPage(QWidget):
     def selected_output(self) -> Path:
         return Path(self.output.text().strip())
 
+    def autonomous_enabled(self) -> bool:
+        return self.autonomous_mode.isChecked()
+
     def set_scan(self, scan) -> None:
         stats = scan.file_statistics; values = (scan.module_count, stats["python"], stats["xml"], stats["javascript"], stats["csv"])
         for card, value in zip(self.metrics, values): card.set_value(value, "addons" if card is self.metrics[0] else "files")
@@ -156,6 +161,7 @@ class ProjectPage(QWidget):
     def set_busy(self, busy: bool) -> None:
         self.analyze_button.setEnabled(not busy and bool(self.selected_target()) and self.state_ready())
         self.path_picker.setEnabled(not busy)
+        self.autonomous_mode.setEnabled(not busy)
 
     def state_ready(self) -> bool:
         return self.path_picker.path().is_dir()

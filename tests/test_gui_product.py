@@ -514,3 +514,35 @@ def test_git_missing_message_is_cross_platform():
     assert "Git was not found" in message
     assert "Git for Windows" not in message
     assert "Local Exact Source" in message
+
+
+
+def test_autonomous_mode_is_enabled_by_default_and_can_be_disabled(qapp):
+    page = ProjectPage()
+    assert page.autonomous_enabled()
+    page.autonomous_mode.setChecked(False)
+    assert not page.autonomous_enabled()
+    page.close()
+
+
+def test_clean_analysis_queues_autonomous_migration_only_while_analysis_task_is_active(qapp, monkeypatch):
+    window = MainWindow()
+    window._busy = True
+    window.project_page.autonomous_mode.setChecked(True)
+    window.project_page.output.setText("C:/tmp/migrated")
+    result = SimpleNamespace(
+        blockers=(),
+        findings=(),
+        auto_fix_candidates=(),
+        resolved_findings=(),
+        scan=SimpleNamespace(root=Path("C:/tmp/custom"), module_count=0),
+        plan=SimpleNamespace(source=18, target=19),
+        steps=(),
+        review_required=(),
+    )
+    window.state.operation_token = 1
+    window._analysis_done(1, result)
+    assert window._auto_migrate_pending
+    window._auto_migrate_pending = False
+    window._busy = False
+    window.close()

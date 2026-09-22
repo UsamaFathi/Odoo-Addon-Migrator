@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QThread, Qt, QUrl, Slot
+from PySide6.QtCore import QSettings, QThread, QTimer, Qt, QUrl, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget
 
@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
         self.source_manager = getattr(self.analysis_service, "source_manager", None) or SourceManager()
         if getattr(self.analysis_service, "source_manager", None) is None: self.analysis_service.source_manager = self.source_manager
         self.source_selections: dict[int, SourceSelection] = {}
-        self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._task_success_callback = None; self._task_busy_callback = None; self._log_dir = configure_logging()
+        self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._task_success_callback = None; self._task_busy_callback = None; self._auto_migrate_pending = False; self._log_dir = configure_logging()
         if settings is None:
             self.settings = DesktopSettings()
         elif isinstance(settings, QSettings):
@@ -209,6 +209,8 @@ class MainWindow(QMainWindow):
         snapshots = {step.source: step.source_snapshot for step in result.steps}
         if result.steps: snapshots[result.steps[-1].target] = result.steps[-1].target_snapshot
         self.project_page.sources.set_versions(sorted(snapshots), snapshots, self.source_selections); self.analysis_page.details.set_project_root(result.scan.root); self._show_page(1, 2); self._log("Analysis completed", source=result.plan.source, target=result.plan.target, findings=len(result.findings))
+        self._auto_migrate_pending = bool(self._busy and self.project_page.autonomous_enabled() and not result.blockers)
+        if self._auto_migrate_pending: self._log("Autonomous migration queued", output=self.project_page.selected_output())
 
     def _migrate(self) -> None:
         analysis = self.state.analysis; output = self.project_page.selected_output()
@@ -221,6 +223,7 @@ class MainWindow(QMainWindow):
         self.state.set_migration(result); self.results_page.set_result(result, self.state.analysis); self._show_page(3, 4); self._log("Migration completed", output=result.output)
 
     def _clear_analysis(self) -> None:
+        self._auto_migrate_pending = False
         self.state.analysis = None; self.state.migration = None; self.analysis_page.migrate_button.setEnabled(False)
 
     def _start_task(self, name: str, operation, args: tuple, success, busy_callback) -> None:
@@ -251,6 +254,7 @@ class MainWindow(QMainWindow):
     @Slot(int, str, str)
     def _task_failed(self, token: int, message: str, details: str) -> None:
         if token != self.state.operation_token: return
+        self._auto_migrate_pending = False
         self.state.last_error = message; logger.error("Task failed: %s\n%s", message, details); self._show_error(self._friendly_error(message), details)
 
     @staticmethod
@@ -290,10 +294,13 @@ class MainWindow(QMainWindow):
     @Slot()
     def _task_thread_finished(self) -> None:
         callback = self._task_busy_callback
+        auto_migrate = self._auto_migrate_pending
+        self._auto_migrate_pending = False
         self._busy = False
         if callback: callback(False)
         self._thread = self._worker = None
         self._task_success_callback = self._task_busy_callback = None
+        if auto_migrate: QTimer.singleShot(0, self._migrate)
 
     def _show_error(self, message: str, details: str = "") -> None:
         box = QMessageBox(self); box.setIcon(QMessageBox.Critical); box.setWindowTitle("Odoo Addon Migrator"); box.setText(message)
