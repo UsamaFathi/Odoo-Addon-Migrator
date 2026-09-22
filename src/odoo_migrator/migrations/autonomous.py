@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import ast
 import csv
+import io
+import tokenize
 import re
 from pathlib import Path
 
 from odoo_migrator.migrations.base import Change
+from odoo_migrator.migrations.method_matching import high_confidence_method_renames
 from odoo_migrator.sources.diff import SourceDiff
 from odoo_migrator.sources.indexer import OdooIndex
 
@@ -233,6 +236,142 @@ class ModelRenameResolver:
                         path.write_text(updated, encoding="utf-8")
         return changes
 
+
+class MethodRenameResolver:
+    """Rename a custom override only when source semantics prove a unique target method."""
+
+    category = "python"
+    automatic = True
+
+    def __init__(self, source: int, target: int):
+        self.source = source
+        self.target = target
+        self.rule_id = f"autonomous.method_rename.{source}_to_{target}"
+        self.description = "Rename custom Python overrides to a high-confidence target method."
+
+    @staticmethod
+    def _class_models(node: ast.ClassDef) -> set[str]:
+        declared: list[str] = []
+        inherited: list[str] = []
+        for statement in node.body:
+            if not isinstance(statement, ast.Assign):
+                continue
+            values = []
+            if isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
+                values = [statement.value.value]
+            elif isinstance(statement.value, (ast.List, ast.Tuple)):
+                values = [
+                    item.value for item in statement.value.elts
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                ]
+            for target in statement.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if target.id == "_name":
+                    declared.extend(values)
+                elif target.id == "_inherit":
+                    inherited.extend(values)
+        return set(declared or inherited)
+
+    @staticmethod
+    def _rewrite_file(path: Path, model: str, old: str, new: str) -> str | None:
+        try:
+            text = path.read_text(encoding="utf-8")
+            tree = ast.parse(text, filename=str(path))
+        except (OSError, UnicodeError, SyntaxError):
+            return None
+
+        ranges = [
+            (node.lineno, getattr(node, "end_lineno", node.lineno))
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and model in MethodRenameResolver._class_models(node)
+        ]
+        if not ranges:
+            return None
+
+        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+        significant: list[tokenize.TokenInfo] = []
+        replacements: list[tuple[int, int, int, int, str]] = []
+        for token in tokens:
+            if token.type in {tokenize.ENCODING, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
+                              tokenize.DEDENT, tokenize.COMMENT, tokenize.ENDMARKER}:
+                continue
+            in_model_class = any(start <= token.start[0] <= end for start, end in ranges)
+            if in_model_class and token.type == tokenize.NAME and token.string == old:
+                previous = [item.string for item in significant[-8:]]
+                rename = bool(previous and previous[-1] == "def")
+                if previous and previous[-1] == ".":
+                    if len(previous) >= 2 and previous[-2] in {"self", "cls"}:
+                        rename = True
+                    elif len(previous) >= 2 and previous[-2] == ")" and "super" in previous:
+                        rename = True
+                if rename:
+                    replacements.append((*token.start, *token.end, new))
+            significant.append(token)
+
+        if not replacements:
+            return None
+
+        lines = text.splitlines(keepends=True)
+        offsets = [0]
+        for line in lines:
+            offsets.append(offsets[-1] + len(line))
+
+        def absolute(line: int, column: int) -> int:
+            return offsets[line - 1] + column
+
+        updated = text
+        for start_line, start_col, end_line, end_col, replacement in reversed(replacements):
+            start = absolute(start_line, start_col)
+            end = absolute(end_line, end_col)
+            updated = updated[:start] + replacement + updated[end:]
+        try:
+            ast.parse(updated, filename=str(path))
+        except SyntaxError:
+            return None
+        return updated
+
+    def apply(
+        self,
+        root: Path,
+        custom: OdooIndex,
+        source: OdooIndex,
+        target: OdooIndex,
+        diff: SourceDiff,
+        *,
+        dry_run: bool = False,
+    ) -> list[Change]:
+        changes: list[Change] = []
+        matches = high_confidence_method_renames(source, target, diff)
+        if not matches:
+            return changes
+        for match in matches:
+            for module_name, module in custom.modules.items():
+                model = module.models.get(match.model)
+                if model is None or match.source_method not in model.methods:
+                    continue
+                candidate_paths: set[Path] = set()
+                location = model.method_locations.get(match.source_method)
+                if location:
+                    candidate_paths.add(Path(root) / module_name / location[0])
+                else:
+                    candidate_paths.update((Path(root) / module_name).rglob("*.py"))
+                for path in sorted(candidate_paths):
+                    updated = self._rewrite_file(path, match.model, match.source_method, match.target_method)
+                    if updated is None:
+                        continue
+                    changes.append(Change(
+                        self.rule_id,
+                        path,
+                        f"Method {match.model}.{match.source_method} → {match.target_method} "
+                        f"(semantic score {match.score:.3f}, margin {match.margin:.3f}; "
+                        + ", ".join(match.evidence) + ")",
+                        migration_step=f"{self.source}_to_{self.target}",
+                    ))
+                    if not dry_run:
+                        path.write_text(updated, encoding="utf-8")
+        return changes
+
 class SecurityModelReferenceResolver:
     """Update access-CSV model references when an exact model successor is proven."""
 
@@ -325,9 +464,10 @@ class SecurityModelReferenceResolver:
         return changes
 
 
-def autonomous_resolvers_for(source: int, target: int) -> tuple[DependencyModuleRenameResolver | ModelRenameResolver | SecurityModelReferenceResolver, ...]:
+def autonomous_resolvers_for(source: int, target: int) -> tuple[DependencyModuleRenameResolver | ModelRenameResolver | MethodRenameResolver | SecurityModelReferenceResolver, ...]:
     return (
         DependencyModuleRenameResolver(source, target),
         ModelRenameResolver(source, target),
+        MethodRenameResolver(source, target),
         SecurityModelReferenceResolver(source, target),
     )

@@ -9,7 +9,7 @@ import hashlib
 import inspect
 import re
 
-INDEX_SCHEMA_VERSION = 7
+INDEX_SCHEMA_VERSION = 8
 
 
 def _json_safe(value):
@@ -34,12 +34,13 @@ class ModelInfo:
     line: int | None = None
     method_locations: dict[str, tuple[str, int]] = field(default_factory=dict)
     field_locations: dict[str, tuple[str, int]] = field(default_factory=dict)
+    method_features: dict[str, dict] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {"name": self.name, "methods": sorted(self.methods), "fields": sorted(self.fields),
                 "inherits": sorted(self.inherits), "delegated_inherits": sorted(self.delegated_inherits), "signatures": self.signatures,
                 "source_path": self.source_path, "line": self.line, "method_locations": self.method_locations,
-                "field_locations": self.field_locations}
+                "field_locations": self.field_locations, "method_features": _json_safe(self.method_features)}
 
 
 @dataclass(slots=True)
@@ -113,6 +114,7 @@ class OdooIndex:
                 item.signatures.update(info.signatures)
                 item.method_locations.update(info.method_locations)
                 item.field_locations.update(info.field_locations)
+                item.method_features.update(info.method_features)
                 if not item.source_path: item.source_path, item.line = info.source_path, info.line
         return merged
 
@@ -248,7 +250,8 @@ class SourceIndexer:
                                                set(model_raw.get("inherits", [])), set(model_raw.get("delegated_inherits", [])), model_raw.get("signatures", {}),
                                                model_raw.get("source_path"), model_raw.get("line"),
                                                {k: tuple(v) for k, v in model_raw.get("method_locations", {}).items()},
-                                               {k: tuple(v) for k, v in model_raw.get("field_locations", {}).items()})
+                                               {k: tuple(v) for k, v in model_raw.get("field_locations", {}).items()},
+                                               model_raw.get("method_features", {}))
             modules[name] = info
         return OdooIndex(
             root=data.get("root", ""), modules=modules,
@@ -303,12 +306,86 @@ class SourceIndexer:
                         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                             info.signatures[child.name] = str(inspect.Signature.from_callable(lambda: None)) if False else ast.unparse(child.args)
                             info.method_locations[child.name] = (relative_path, child.lineno)
+                            info.method_features[child.name] = self._method_features(child)
                     for child in node.body:
                         if isinstance(child, (ast.Assign, ast.AnnAssign)):
                             targets = child.targets if isinstance(child, ast.Assign) else [child.target]
                             if self._is_fields_call(child.value):
                                 for target in targets:
                                     if isinstance(target, ast.Name): info.field_locations[target.id] = (relative_path, child.lineno)
+
+    @staticmethod
+    def _qualified_name(node: ast.AST | None) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent = SourceIndexer._qualified_name(node.value)
+            return f"{parent}.{node.attr}" if parent else node.attr
+        if isinstance(node, ast.Call):
+            return SourceIndexer._qualified_name(node.func)
+        return None
+
+    @staticmethod
+    def _method_features(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict:
+        decorators = sorted(
+            value for value in (
+                SourceIndexer._qualified_name(item)
+                for item in node.decorator_list
+            ) if value
+        )
+        calls: set[str] = set()
+        attributes: set[str] = set()
+        string_tokens: set[str] = set()
+        structure: list[str] = []
+        returns = raises = branches = loops = 0
+        for child in ast.walk(node):
+            if isinstance(child, (ast.Load, ast.Store, ast.Del, ast.arguments, ast.arg)):
+                continue
+            structure.append(type(child).__name__)
+            if isinstance(child, ast.Call):
+                name = SourceIndexer._qualified_name(child.func)
+                if name:
+                    calls.add(name)
+            elif isinstance(child, ast.Attribute):
+                attributes.add(child.attr)
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                string_tokens.update(
+                    token.lower()
+                    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", child.value)
+                    if token.lower() not in {"self", "true", "false", "none"}
+                )
+            if isinstance(child, ast.Return):
+                returns += 1
+            elif isinstance(child, ast.Raise):
+                raises += 1
+            elif isinstance(child, (ast.If, ast.IfExp, ast.Match)):
+                branches += 1
+            elif isinstance(child, (ast.For, ast.AsyncFor, ast.While)):
+                loops += 1
+
+        positional = len(node.args.posonlyargs) + len(node.args.args)
+        if node.args.args and node.args.args[0].arg in {"self", "cls"}:
+            positional -= 1
+        return {
+            "decorators": decorators,
+            "calls": sorted(calls),
+            "attributes": sorted(attributes),
+            "strings": sorted(string_tokens),
+            "structure": structure,
+            "node_count": len(structure),
+            "signature_shape": {
+                "positional": max(0, positional),
+                "kwonly": len(node.args.kwonlyargs),
+                "defaults": len(node.args.defaults),
+                "kw_defaults": sum(item is not None for item in node.args.kw_defaults),
+                "vararg": bool(node.args.vararg),
+                "kwarg": bool(node.args.kwarg),
+            },
+            "returns": returns,
+            "raises": raises,
+            "branches": branches,
+            "loops": loops,
+        }
 
     @staticmethod
     def _literal_strings(value: ast.AST | None) -> list[str]:
