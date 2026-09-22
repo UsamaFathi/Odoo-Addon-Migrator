@@ -1,0 +1,100 @@
+name: Publish RC2
+
+on:
+  workflow_run:
+    workflows: ["Windows desktop build"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_sha == 'cd60ed89c023c095344ac31f0ce9a1d140ddb849'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: v1.0.0-rc.2
+      RELEASE_TARGET: cd60ed89c023c095344ac31f0ce9a1d140ddb849
+      ARTIFACT_RUN_ID: ${{ github.event.workflow_run.id }}
+
+    steps:
+      - name: Verify matching CI succeeded
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            result="$(gh run list               --repo "$GITHUB_REPOSITORY"               --workflow CI               --commit "$RELEASE_TARGET"               --limit 1               --json status,conclusion               --jq '.[0] | [.status, .conclusion] | @tsv')"
+            status="$(printf '%s' "$result" | cut -f1)"
+            conclusion="$(printf '%s' "$result" | cut -f2)"
+            echo "CI status=$status conclusion=$conclusion"
+            if [ "$status" = "completed" ]; then
+              [ "$conclusion" = "success" ] && exit 0
+              echo "CI did not succeed." >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for CI." >&2
+          exit 1
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+            exit 0
+          fi
+
+          mkdir -p release-assets/portable release-assets/installer
+
+          gh run download "$ARTIFACT_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name OdooAddonMigrator-Windows             --dir release-assets/portable
+
+          gh run download "$ARTIFACT_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name OdooAddonMigrator-Installer             --dir release-assets/installer
+
+          installer="$(find release-assets/installer -name OdooAddonMigrator_Setup.exe -type f -print -quit)"
+          if [ -z "$installer" ]; then
+            echo "OdooAddonMigrator_Setup.exe was not found." >&2
+            exit 1
+          fi
+
+          cp "$installer" release-assets/OdooAddonMigrator_Setup.exe
+          (
+            cd release-assets/portable
+            zip -r ../OdooAddonMigrator-Windows.zip .
+          )
+
+          cat > release-notes.md <<'EOF'
+          ## Odoo Addon Migrator v1.0.0-rc.2
+
+          RC2 is a major desktop UX update.
+
+          ### Download
+          - **OdooAddonMigrator_Setup.exe** — recommended Windows installer.
+          - **OdooAddonMigrator-Windows.zip** — portable build.
+
+          ### RC2 highlights
+          - Redesigned professional desktop shell and workflow.
+          - Fixed pytest/temp project paths leaking into desktop settings.
+          - Added per-version **Local Exact Source** support.
+          - Local Odoo source folders are validated and read-only.
+          - Mix local and verified sources in the same migration path.
+          - Git is not required when every required Odoo source is supplied locally.
+          - Source cards now say **Use verified snapshot**; a missing snapshot is downloaded only after confirmation when analysis starts.
+          - Improved source cards, project metrics, findings review, migration and results screens.
+          - New independent application icon and branding.
+
+          ### Important
+          This is a **release candidate**. Static validation does not guarantee runtime or production compatibility. Install and test migrated addons on the target Odoo version before production use.
+
+          The Windows build is unsigned, so Microsoft SmartScreen may display a warning.
+
+          Independent migration utility. Not affiliated with Odoo S.A.
+          EOF
+
+          gh release create "$RELEASE_TAG"             release-assets/OdooAddonMigrator_Setup.exe             release-assets/OdooAddonMigrator-Windows.zip             --repo "$GITHUB_REPOSITORY"             --target "$RELEASE_TARGET"             --title "Odoo Addon Migrator v1.0.0-rc.2"             --notes-file release-notes.md             --prerelease
