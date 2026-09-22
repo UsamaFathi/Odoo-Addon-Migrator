@@ -20,6 +20,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libgl1 \
+            libegl1 \
+            libfontconfig1 \
             libx11-6 \
             libxcb1 \
             libxkbcommon0 \
