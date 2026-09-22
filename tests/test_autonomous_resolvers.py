@@ -144,3 +144,36 @@ def test_small_model_match_is_not_auto_rewritten(tmp_path: Path):
 
     assert analysis.blockers
     assert not any(item.rule_id == "autonomous.model_rename.18_to_19" for item in analysis.auto_fix_candidates)
+
+def test_security_model_reference_follows_proven_model_rename(tmp_path: Path):
+    source_root = tmp_path / "odoo18"
+    target_root = tmp_path / "odoo19"
+    custom_root = tmp_path / "custom"
+    features = ("name", "state", "code", "active")
+    methods = ("action_open", "action_close")
+    _module(source_root, "core", version=18, model="legacy.model", fields=features, methods=methods)
+    _module(target_root, "core", version=19, model="modern.model", fields=features, methods=methods)
+    _custom_extension(custom_root, inherited="legacy.model")
+    security = custom_root / "demo" / "security"
+    security.mkdir()
+    access = security / "ir.model.access.csv"
+    access.write_text(
+        "id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink\n"
+        "access_demo,access.demo,model_legacy_model,,1,1,1,1\n",
+        encoding="utf-8",
+    )
+
+    snapshots = {18: _snapshot(18, source_root), 19: _snapshot(19, target_root)}
+    analysis = AnalysisService(_registry(), _Manager(snapshots)).analyze(custom_root, 18, 19)
+
+    assert analysis.blockers == ()
+    assert any(item.rule_id == "autonomous.security_model_ref.18_to_19" for item in analysis.auto_fix_candidates)
+    assert "model_legacy_model" in access.read_text(encoding="utf-8")
+
+    output = tmp_path / "custom_security_19"
+    result = MigrationService(_registry()).migrate(custom_root, output, analysis)
+    migrated_access = (output / "demo" / "security" / "ir.model.access.csv").read_text(encoding="utf-8")
+    assert "model_modern_model" in migrated_access
+    assert "model_legacy_model" not in migrated_access
+    assert "model_legacy_model" in access.read_text(encoding="utf-8")
+    assert any(change.rule_id == "autonomous.security_model_ref.18_to_19" for change in result.changes)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import csv
 import re
 from pathlib import Path
 
@@ -232,8 +233,101 @@ class ModelRenameResolver:
                         path.write_text(updated, encoding="utf-8")
         return changes
 
-def autonomous_resolvers_for(source: int, target: int) -> tuple[DependencyModuleRenameResolver | ModelRenameResolver, ...]:
+class SecurityModelReferenceResolver:
+    """Update access-CSV model references when an exact model successor is proven."""
+
+    category = "security"
+    automatic = True
+    confidence = 1.0
+
+    def __init__(self, source: int, target: int):
+        self.source = source
+        self.target = target
+        self.rule_id = f"autonomous.security_model_ref.{source}_to_{target}"
+        self.description = "Update access CSV model references to a proven successor model."
+        self._models = ModelRenameResolver(source, target)
+
+    @staticmethod
+    def _target_external_id(model_name: str, target: OdooIndex, qualified: bool) -> str | None:
+        short = f"model_{model_name.replace('.', '_')}"
+        owners = ModelRenameResolver._owners(target, model_name)
+        candidates = sorted(xml_id for xml_id, value in target.model_xml_ids.items() if value == model_name)
+        if qualified and len(owners) == 1:
+            preferred = f"{owners[0]}.{short}"
+            if preferred in candidates:
+                return preferred
+        if short in candidates:
+            return short
+        if qualified:
+            qualified_candidates = [item for item in candidates if '.' in item]
+            if len(qualified_candidates) == 1:
+                return qualified_candidates[0]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def apply(
+        self,
+        root: Path,
+        custom: OdooIndex,
+        source: OdooIndex,
+        target: OdooIndex,
+        diff: SourceDiff,
+        *,
+        dry_run: bool = False,
+    ) -> list[Change]:
+        changes: list[Change] = []
+        for module_name in sorted(custom.modules):
+            module_root = Path(root) / module_name
+            for path in sorted(module_root.rglob("ir.model.access.csv")):
+                try:
+                    text = path.read_text(encoding="utf-8")
+                    rows = list(csv.DictReader(text.splitlines()))
+                except (OSError, UnicodeError, csv.Error):
+                    continue
+                if not rows:
+                    continue
+                replacements: dict[str, str] = {}
+                for row in rows:
+                    model_ref = (row.get("model_id:id") or "").strip()
+                    if not model_ref or target.resolve_model_external_id(model_ref) is not None:
+                        continue
+                    source_model = source.resolve_model_external_id(model_ref)
+                    if source_model is None:
+                        continue
+                    successor = self._models._successor(source_model, source, target, diff)
+                    if successor is None:
+                        continue
+                    replacement = self._target_external_id(successor, target, qualified="." in model_ref)
+                    if replacement is None or replacement == model_ref:
+                        continue
+                    replacements[model_ref] = replacement
+                if not replacements:
+                    continue
+
+                updated = text
+                for old, new in replacements.items():
+                    updated = updated.replace(old, new)
+                try:
+                    updated_rows = list(csv.DictReader(updated.splitlines()))
+                except csv.Error:
+                    continue
+                if len(updated_rows) != len(rows):
+                    continue
+                changes.append(Change(
+                    self.rule_id,
+                    path,
+                    "Updated access CSV model references: " + ", ".join(
+                        f"{old} → {new}" for old, new in sorted(replacements.items())
+                    ) + f" (confidence {self.confidence:.2f})",
+                    migration_step=f"{self.source}_to_{self.target}",
+                ))
+                if not dry_run:
+                    path.write_text(updated, encoding="utf-8")
+        return changes
+
+
+def autonomous_resolvers_for(source: int, target: int) -> tuple[DependencyModuleRenameResolver | ModelRenameResolver | SecurityModelReferenceResolver, ...]:
     return (
         DependencyModuleRenameResolver(source, target),
         ModelRenameResolver(source, target),
+        SecurityModelReferenceResolver(source, target),
     )
