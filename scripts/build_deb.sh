@@ -30,7 +30,7 @@ Section: devel
 Priority: optional
 Architecture: $ARCH
 Maintainer: Usama Fathi
-Depends: libc6, libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libxcb-cursor0, libxcb-xinerama0, libdbus-1-3, libgl1, libegl1, libfontconfig1
+Depends: libc6, libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libxcb-cursor0, libxcb-xinerama0, libxcb-icccm4, libxcb-keysyms1, libxcb-shape0, libdbus-1-3, libgl1, libegl1, libfontconfig1
 Recommends: git, xdg-utils
 Description: Source-aware migration assistant for custom Odoo addons
  Odoo Addon Migrator analyzes and migrates custom addons across supported
