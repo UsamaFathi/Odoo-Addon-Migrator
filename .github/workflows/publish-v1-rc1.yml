@@ -1,8 +1,9 @@
-name: Publish v1.0.0-rc.1
+name: Publish RC1
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -10,8 +11,8 @@ permissions:
 
 jobs:
   publish:
-    if: github.event.head_commit.message == 'chore: publish v1.0.0-rc.1 release'
-    runs-on: windows-latest
+    if: ${{ contains(github.event.head_commit.message, 'publish v1.0.0-rc.1') }}
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: v1.0.0-rc.1
@@ -19,44 +20,35 @@ jobs:
       ARTIFACT_RUN_ID: "35695187502"
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Publish GitHub Release
-        shell: pwsh
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
+          set -euo pipefail
 
-          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
-              Write-Host "Release $env:RELEASE_TAG already exists."
-              exit 0
-          }
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+            exit 0
+          fi
 
-          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
-          New-Item -ItemType Directory -Path release-assets\portable -Force | Out-Null
-          New-Item -ItemType Directory -Path release-assets\installer -Force | Out-Null
+          mkdir -p release-assets/portable release-assets/installer
 
-          gh run download $env:ARTIFACT_RUN_ID --repo $env:GITHUB_REPOSITORY `
-              --name OdooAddonMigrator-Windows `
-              --dir release-assets\portable
+          gh run download "$ARTIFACT_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name OdooAddonMigrator-Windows             --dir release-assets/portable
 
-          gh run download $env:ARTIFACT_RUN_ID --repo $env:GITHUB_REPOSITORY `
-              --name OdooAddonMigrator-Installer `
-              --dir release-assets\installer
+          gh run download "$ARTIFACT_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name OdooAddonMigrator-Installer             --dir release-assets/installer
 
-          $installer = Get-ChildItem release-assets\installer -Filter OdooAddonMigrator_Setup.exe -Recurse |
-              Select-Object -First 1
-          if (-not $installer) {
-              throw "OdooAddonMigrator_Setup.exe was not found in the installer artifact."
-          }
+          installer="$(find release-assets/installer -name OdooAddonMigrator_Setup.exe -type f -print -quit)"
+          if [ -z "$installer" ]; then
+            echo "OdooAddonMigrator_Setup.exe was not found in the installer artifact." >&2
+            exit 1
+          fi
 
-          Copy-Item $installer.FullName release-assets\OdooAddonMigrator_Setup.exe -Force
+          cp "$installer" release-assets/OdooAddonMigrator_Setup.exe
+          (
+            cd release-assets/portable
+            zip -r ../OdooAddonMigrator-Windows.zip .
+          )
 
-          $portableZip = "release-assets\OdooAddonMigrator-Windows.zip"
-          if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
-          Compress-Archive -Path release-assets\portable\* -DestinationPath $portableZip -CompressionLevel Optimal
-
-          @"
+          cat > release-notes.md <<'EOF'
           ## Odoo Addon Migrator v1.0.0-rc.1
 
           First public release candidate of the Windows desktop application.
@@ -82,13 +74,6 @@ jobs:
           The Windows build is currently unsigned, so Microsoft SmartScreen may display a warning.
 
           Independent migration utility. Not affiliated with Odoo S.A.
-          "@ | Set-Content release-notes.md -Encoding UTF8
+          EOF
 
-          gh release create $env:RELEASE_TAG `
-              release-assets\OdooAddonMigrator_Setup.exe `
-              release-assets\OdooAddonMigrator-Windows.zip `
-              --repo $env:GITHUB_REPOSITORY `
-              --target $env:RELEASE_TARGET `
-              --title "Odoo Addon Migrator v1.0.0-rc.1" `
-              --notes-file release-notes.md `
-              --prerelease
+          gh release create "$RELEASE_TAG"             release-assets/OdooAddonMigrator_Setup.exe             release-assets/OdooAddonMigrator-Windows.zip             --repo "$GITHUB_REPOSITORY"             --target "$RELEASE_TARGET"             --title "Odoo Addon Migrator v1.0.0-rc.1"             --notes-file release-notes.md             --prerelease
