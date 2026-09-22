@@ -37,16 +37,19 @@ class _ProjectScrollArea(QScrollArea):
         self.setObjectName("projectScroll")
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setWidgetResizable(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setWidget(page)
+        self.verticalScrollBar().setSingleStep(48)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
         page = self.widget()
         if page is None:
             return
-        minimum = page.minimumSizeHint()
+        preferred = page.sizeHint().expandedTo(page.minimumSizeHint())
         viewport = self.viewport().size()
-        page.resize(max(viewport.width(), minimum.width()), max(viewport.height(), minimum.height()))
+        page.resize(max(viewport.width(), preferred.width()), max(viewport.height(), preferred.height()))
 
 
 def _display_version(version: str) -> str:

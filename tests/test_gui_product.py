@@ -11,8 +11,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPoint, QRect, QSettings, QThread
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QPoint, QPointF, QRect, QSettings, QThread, Qt
+from PySide6.QtGui import QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QGridLayout, QLabel
 
 from odoo_migrator.analysis.compat import Finding, Severity
@@ -303,6 +303,36 @@ def test_worker_callbacks_are_delivered_on_gui_thread(qapp):
     assert results == ["done"]
     assert {name for name, _thread in callback_threads} == {"stage", "success"}
     assert all(thread is qapp.thread() for _name, thread in callback_threads)
+    window.close()
+
+
+def test_project_page_scrolls_with_mouse_wheel_without_changing_version(qapp):
+    window = MainWindow()
+    window.resize(1233, 726)
+    window.show()
+    qapp.processEvents()
+    page = window.project_page
+    page.set_source_versions([14, 15, 16, 17, 18, 19], 18)
+    selected = page.source.currentText()
+    scroll = window.project_scroll.verticalScrollBar()
+
+    assert scroll.maximum() > 0
+    scroll.setValue(0)
+    position = QPointF(20, 20)
+    global_position = QPointF(page.source.mapToGlobal(QPoint(20, 20)))
+    combo_wheel = QWheelEvent(position, global_position, QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False)
+    qapp.sendEvent(page.source, combo_wheel)
+    qapp.processEvents()
+    assert page.source.currentText() == selected
+    assert scroll.value() > 0
+
+    scroll.setValue(0)
+    viewport_position = QPointF(window.project_scroll.viewport().rect().center())
+    viewport_global = QPointF(window.project_scroll.viewport().mapToGlobal(window.project_scroll.viewport().rect().center()))
+    page_wheel = QWheelEvent(viewport_position, viewport_global, QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False)
+    qapp.sendEvent(window.project_scroll.viewport(), page_wheel)
+    qapp.processEvents()
+    assert scroll.value() > 0
     window.close()
 
 

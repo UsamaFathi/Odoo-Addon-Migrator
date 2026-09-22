@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, Signal
+from PySide6.QtWidgets import QAbstractScrollArea, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
 
 from odoo_migrator.ui.models.addons_model import AddonsModel
 from odoo_migrator.ui.models.application_state import suggested_output_path
@@ -11,6 +11,37 @@ from odoo_migrator.ui.widgets.design_system import MetricCard, SectionHeader, St
 from odoo_migrator.ui.widgets.path_picker import PathPicker
 from odoo_migrator.ui.widgets.source_status import SourceStatus
 from odoo_migrator.sources.registry import SourceSelection
+
+
+class ScrollSafeComboBox(QComboBox):
+    """Let the containing page handle wheel scrolling instead of changing versions."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.installEventFilter(self)
+
+    def _scroll_page(self, event) -> bool:
+        parent = self.parentWidget()
+        while parent is not None and not isinstance(parent, QAbstractScrollArea):
+            parent = parent.parentWidget()
+        if isinstance(parent, QAbstractScrollArea):
+            bar = parent.verticalScrollBar()
+            pixel_delta = event.pixelDelta().y()
+            step = -pixel_delta if pixel_delta else -event.angleDelta().y() / 120 * bar.singleStep()
+            bar.setValue(bar.value() + int(step))
+            event.accept()
+            return True
+        return False
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        if watched is self and event.type() == QEvent.Type.Wheel and self._scroll_page(event):
+            return True
+        return super().eventFilter(watched, event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if self._scroll_page(event):
+            return
+        event.ignore()
 
 
 class ProjectPage(QWidget):
@@ -26,8 +57,8 @@ class ProjectPage(QWidget):
         super().__init__(parent)
         self.path_picker = PathPicker(); self.path_picker.pathChanged.connect(self._path_changed)
         self.browse_button = QPushButton("Browse…"); self.browse_button.setObjectName("secondary"); self.browse_button.clicked.connect(self.path_picker.browse)
-        self.source = QComboBox(); self.source.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.target = QComboBox(); self.target.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.source = ScrollSafeComboBox(); self.source.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.target = ScrollSafeComboBox(); self.target.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.source.setPlaceholderText("Detect after scan"); self.target.setPlaceholderText("Choose target")
         self.source.currentTextChanged.connect(lambda value: value and self.sourceChanged.emit(int(value)))
         self.target.currentTextChanged.connect(lambda value: value and self.targetChanged.emit(int(value)))
@@ -47,15 +78,11 @@ class ProjectPage(QWidget):
         self._build()
         self._set_controls_enabled(False)
 
-    def sizeHint(self):  # noqa: N802 - Qt API
-        """Prefer the compact layout; the addons table absorbs extra height."""
-        return self.minimumSizeHint()
-
     def _build(self) -> None:
-        main = QVBoxLayout(self); main.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); main.setContentsMargins(28, 16, 28, 12); main.setSpacing(6)
+        main = QVBoxLayout(self); main.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); main.setContentsMargins(28, 24, 28, 24); main.setSpacing(14)
         main.addWidget(SectionHeader("Project", "Select the custom addons you want to migrate. Your original files will never be modified."))
         setup = SurfaceCard(); setup.setObjectName("projectSetupCard"); setup.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum); self.setup_card = setup
-        setup_layout = QGridLayout(setup); setup_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); setup_layout.setContentsMargins(18, 8, 18, 8); setup_layout.setHorizontalSpacing(14); setup_layout.setVerticalSpacing(3)
+        setup_layout = QGridLayout(setup); setup_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize); setup_layout.setContentsMargins(20, 18, 20, 18); setup_layout.setHorizontalSpacing(18); setup_layout.setVerticalSpacing(12)
         self.path_label = self._field_label("CUSTOM ADDONS FOLDER")
         self.source_label = self._field_label("SOURCE VERSION")
         self.target_label = self._field_label("TARGET VERSION")
