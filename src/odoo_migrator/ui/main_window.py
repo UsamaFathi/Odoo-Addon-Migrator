@@ -218,10 +218,10 @@ class MainWindow(QMainWindow):
 
     def _confirm_source_setup(self, versions: list[int]) -> bool:
         dialog = QDialog(self); dialog.setWindowTitle("Configure Odoo sources"); layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("Odoo source required\nChoose a local source or download the verified snapshot for each version."))
+        layout.addWidget(QLabel("Odoo source required\nChoose a local source or use the verified snapshot for each version. If it is not cached, it will be downloaded when analysis starts."))
         rows: dict[int, QLabel] = {}
         for version in versions:
-            row = QHBoxLayout(); title = QLabel(f"Odoo {version}"); state = QLabel("Not configured"); rows[version] = state; local = QPushButton("Select local source"); download = QPushButton("Download verified"); download.setObjectName("secondary")
+            row = QHBoxLayout(); title = QLabel(f"Odoo {version}"); state = QLabel("Not configured"); rows[version] = state; local = QPushButton("Select local source"); download = QPushButton("Use verified snapshot"); download.setObjectName("secondary")
             local.clicked.connect(lambda _checked=False, value=version: (self._setup_local_source(dialog, value, rows[value]), refresh()))
             download.clicked.connect(lambda _checked=False, value=version: (self._setup_verified_source(value, rows[value]), refresh()))
             row.addWidget(title); row.addWidget(state, 1); row.addWidget(local); row.addWidget(download); layout.addLayout(row)

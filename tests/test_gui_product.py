@@ -129,6 +129,7 @@ def test_source_status_supports_local_exact_source_card(qapp, tmp_path: Path):
     assert status.cards[0].status.text() == "Local source"
     assert status.cards[0].mode.text() == "Local Exact Source"
     assert status.cards[1].status.text() == "Source required"
+    assert status.cards[1].download.text() == "Use verified snapshot"
 
 
 def test_source_status_accepts_mixed_local_and_verified_selections(tmp_path: Path):
