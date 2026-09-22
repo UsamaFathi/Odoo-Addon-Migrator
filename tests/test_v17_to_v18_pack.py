@@ -263,6 +263,7 @@ def test_application_17_to_18_records_source_target_metadata_and_validation(tmp_
     assert [item.rule_id for item in analysis.auto_fix_candidates] == [
         "manifest.version.17_to_18",
         "xml.view_root.tree_to_list.17_to_18",
+        "xml.xpath.tree_to_list.17_to_18",
         "xml.action_view_mode.tree_to_list.17_to_18",
     ]
     output = tmp_path / "output"
