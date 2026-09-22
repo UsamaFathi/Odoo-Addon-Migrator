@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTableView, QVBoxLayout, QWidget, QSizePolicy
+from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
 
 from odoo_migrator.ui.models.addons_model import AddonsModel
 from odoo_migrator.ui.models.application_state import suggested_output_path
@@ -25,6 +25,7 @@ class ProjectPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.path_picker = PathPicker(); self.path_picker.pathChanged.connect(self._path_changed)
+        self.browse_button = QPushButton("Browse…"); self.browse_button.setObjectName("secondary"); self.browse_button.clicked.connect(self.path_picker.browse)
         self.source = QComboBox(); self.source.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.target = QComboBox(); self.target.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.source.setPlaceholderText("Detect after scan"); self.target.setPlaceholderText("Choose target")
@@ -50,12 +51,21 @@ class ProjectPage(QWidget):
         main = QVBoxLayout(self); main.setContentsMargins(28, 20, 28, 16); main.setSpacing(8)
         main.addWidget(SectionHeader("Project", "Select the custom addons you want to migrate. Your original files will never be modified."))
         setup = SurfaceCard(); setup.setObjectName("projectSetupCard"); setup.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum); self.setup_card = setup
-        setup_layout = QVBoxLayout(setup); setup_layout.setContentsMargins(18, 14, 18, 14); setup_layout.setSpacing(9)
-        path_label = QLabel("CUSTOM ADDONS FOLDER"); path_label.setObjectName("eyebrow"); setup_layout.addWidget(path_label); setup_layout.addWidget(self.path_picker)
-        version_row = QHBoxLayout(); version_row.setSpacing(14)
-        version_row.addLayout(self._field("SOURCE VERSION", self.source), 1); version_row.addLayout(self._field("TARGET VERSION", self.target), 1)
-        setup_layout.addLayout(version_row)
-        output_row = QHBoxLayout(); output_row.addLayout(self._field("OUTPUT FOLDER", self.output), 1); setup_layout.addLayout(output_row)
+        setup_layout = QGridLayout(setup); setup_layout.setContentsMargins(18, 8, 18, 8); setup_layout.setHorizontalSpacing(14); setup_layout.setVerticalSpacing(3)
+        self.path_label = self._field_label("CUSTOM ADDONS FOLDER")
+        self.source_label = self._field_label("SOURCE VERSION")
+        self.target_label = self._field_label("TARGET VERSION")
+        self.output_label = self._field_label("OUTPUT FOLDER")
+        setup_layout.addWidget(self.path_label, 0, 0, 1, 3)
+        setup_layout.addWidget(self.path_picker, 1, 0, 1, 2)
+        setup_layout.addWidget(self.browse_button, 1, 2)
+        setup_layout.addWidget(self.source_label, 2, 0)
+        setup_layout.addWidget(self.target_label, 2, 1)
+        setup_layout.addWidget(self.source, 3, 0)
+        setup_layout.addWidget(self.target, 3, 1)
+        setup_layout.addWidget(self.output_label, 4, 0, 1, 3)
+        setup_layout.addWidget(self.output, 5, 0, 1, 3)
+        setup_layout.setColumnStretch(0, 1); setup_layout.setColumnStretch(1, 1); setup_layout.setColumnStretch(2, 0)
         main.addWidget(setup, 0); main.addWidget(self.warning, 0); main.addWidget(self.detection, 0)
         metric_row = QHBoxLayout(); metric_row.setSpacing(8)
         for label in ("Addons", "Python", "XML", "JavaScript", "Security"):
@@ -67,8 +77,8 @@ class ProjectPage(QWidget):
         action_bar = QHBoxLayout(); action_bar.addStretch(); action_bar.addWidget(self.analyze_button); main.addLayout(action_bar, 0)
 
     @staticmethod
-    def _field(label: str, widget: QWidget) -> QVBoxLayout:
-        layout = QVBoxLayout(); layout.setSpacing(3); caption = QLabel(label); caption.setObjectName("fieldLabel"); layout.addWidget(caption); layout.addWidget(widget); return layout
+    def _field_label(text: str) -> QLabel:
+        caption = QLabel(text); caption.setObjectName("fieldLabel"); return caption
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         self.source.setEnabled(enabled); self.target.setEnabled(enabled); self.output.setEnabled(enabled)

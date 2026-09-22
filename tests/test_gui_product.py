@@ -12,11 +12,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QPoint, QRect, QSettings
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QApplication, QGridLayout, QLabel
 
 from odoo_migrator.analysis.compat import Finding, Severity
 from odoo_migrator.analysis.project import scan_custom_addons
 from odoo_migrator.ui.main_window import MainWindow
+from odoo_migrator.ui.app import capture_ui
 import odoo_migrator.ui.settings as settings_module
 from odoo_migrator.ui.models.application_state import ApplicationState, WorkflowPhase, suggested_output_path
 from odoo_migrator.ui.models.findings_model import FindingsModel
@@ -243,11 +245,19 @@ def test_project_setup_card_has_no_overlapping_controls(qapp, size):
     page = window.project_page
     card = page.setup_card
 
-    assert page.path_picker.empty_state.isVisible()
-    assert page.path_picker.empty_browse.isVisible()
-    assert not page.path_picker.compact.isVisible()
+    assert isinstance(card.layout(), QGridLayout)
+    assert page.path_picker.isVisible()
+    assert page.path_picker.placeholderText() == "Select your custom_addons folder"
+    assert page.browse_button.isVisible()
+    assert page.source.height() == page.target.height()
 
-    widgets = [page.path_picker, page.source, page.target, page.output]
+    assert page.path_picker.geometry().bottom() < page.source_label.geometry().top()
+    assert page.path_picker.geometry().bottom() < page.target_label.geometry().top()
+    assert page.source.geometry().bottom() < page.output_label.geometry().top()
+    assert page.target.geometry().bottom() < page.output_label.geometry().top()
+    assert page.output.geometry().bottom() < card.contentsRect().bottom()
+
+    widgets = [page.path_picker, page.browse_button, page.source, page.target, page.output]
     widgets.extend(card.findChildren(QLabel, "fieldLabel"))
     widgets.extend(card.findChildren(QLabel, "eyebrow"))
     rectangles = []
@@ -264,6 +274,15 @@ def test_project_setup_card_has_no_overlapping_controls(qapp, size):
             )
 
     window.close()
+
+
+def test_native_capture_helper_renders_project_page(qapp, tmp_path: Path):
+    output = tmp_path / "project-page.png"
+    assert capture_ui(qapp, output)
+    image = QPixmap(str(output))
+    assert not image.isNull()
+    assert image.width() >= 1366
+    assert image.height() >= 768
 
 
 def test_finding_location_is_project_safe(qapp, tmp_path: Path):
