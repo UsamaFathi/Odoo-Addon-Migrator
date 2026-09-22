@@ -22,11 +22,13 @@ QLabel#pageTitle {{ color: {COLORS['text']}; font-size: 24px; font-weight: 700; 
 QLabel#sectionTitle {{ color: {COLORS['text']}; font-size: 16px; font-weight: 700; }}
 QLabel#muted, QLabel#subtitle {{ color: {COLORS['secondary']}; }}
 QLabel#eyebrow {{ color: {COLORS['accent']}; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
+QLabel#fieldLabel {{ color: {COLORS['accent']}; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
 QFrame#card, QFrame#surfaceCard {{ background-color: {COLORS['surface']}; border: 1px solid {COLORS['border']}; border-radius: 12px; }}
 QLineEdit, QComboBox, QTableView, QListWidget, QTextEdit {{ background-color: {COLORS['surface']}; border: 1px solid #D0D5DD; border-radius: 7px; padding: 7px; selection-background-color: {COLORS['accent_soft']}; selection-color: {COLORS['text']}; }}
 QLineEdit, QComboBox {{ min-height: 24px; }}
 QComboBox::drop-down {{ border: 0; width: 28px; }}
 QLineEdit:focus, QComboBox:focus, QTableView:focus, QTextEdit:focus {{ border: 2px solid {COLORS['accent']}; }}
+QLineEdit:disabled, QComboBox:disabled {{ background-color: #F2F4F7; color: {COLORS['secondary']}; border-color: #D0D5DD; }}
 QPushButton {{ background: {COLORS['accent']}; color: white; border: 0; border-radius: 7px; padding: 9px 16px; font-weight: 700; min-height: 18px; }}
 QPushButton:hover {{ background: {COLORS['accent_hover']}; }}
 QPushButton#secondary {{ background: {COLORS['surface']}; color: {COLORS['text']}; border: 1px solid {COLORS['border']}; }}

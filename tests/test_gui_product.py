@@ -11,8 +11,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint, QRect, QSettings
+from PySide6.QtWidgets import QApplication, QLabel
 
 from odoo_migrator.analysis.compat import Finding, Severity
 from odoo_migrator.analysis.project import scan_custom_addons
@@ -231,6 +231,38 @@ def test_rc2_shell_is_usable_at_standard_windows_size(qapp):
     assert window.project_page.analyze_button.geometry().bottom() <= window.project_page.height()
     screenshot = window.grab()
     assert screenshot.width() > 900 and screenshot.height() > 500
+    window.close()
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (1920, 1080)])
+def test_project_setup_card_has_no_overlapping_controls(qapp, size):
+    window = MainWindow()
+    window.resize(*size)
+    window.show()
+    qapp.processEvents()
+    page = window.project_page
+    card = page.setup_card
+
+    assert page.path_picker.empty_state.isVisible()
+    assert page.path_picker.empty_browse.isVisible()
+    assert not page.path_picker.compact.isVisible()
+
+    widgets = [page.path_picker, page.source, page.target, page.output]
+    widgets.extend(card.findChildren(QLabel, "fieldLabel"))
+    widgets.extend(card.findChildren(QLabel, "eyebrow"))
+    rectangles = []
+    for widget in widgets:
+        top_left = widget.mapTo(card, QPoint(0, 0))
+        rectangles.append((widget, QRect(top_left, widget.size())))
+        assert card.rect().contains(rectangles[-1][1]), widget.objectName()
+
+    for index, (left_widget, left_rect) in enumerate(rectangles):
+        for right_widget, right_rect in rectangles[index + 1:]:
+            assert not left_rect.intersects(right_rect), (
+                left_widget.objectName(), left_rect.getRect(),
+                right_widget.objectName(), right_rect.getRect(),
+            )
+
     window.close()
 
 

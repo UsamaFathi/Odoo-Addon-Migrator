@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 
 class PathPicker(QWidget):
@@ -13,16 +13,19 @@ class PathPicker(QWidget):
         super().__init__(parent)
         self.setObjectName("pathPicker")
         self.empty_state = QWidget()
-        empty_layout = QVBoxLayout(self.empty_state); empty_layout.setContentsMargins(18, 16, 18, 16); empty_layout.setSpacing(4)
-        empty_title = QLabel("Select your custom_addons folder"); empty_title.setObjectName("sectionTitle"); empty_layout.addWidget(empty_title)
-        empty_hint = QLabel("Drag a folder here or browse to choose one. Your original files will never be modified."); empty_hint.setObjectName("muted"); empty_hint.setWordWrap(True); empty_layout.addWidget(empty_hint)
-        self.empty_browse = QPushButton("Browse folders"); self.empty_browse.clicked.connect(self._browse); empty_layout.addWidget(self.empty_browse)
+        self.empty_state.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        empty_layout = QHBoxLayout(self.empty_state); empty_layout.setContentsMargins(16, 12, 16, 12); empty_layout.setSpacing(16)
+        empty_copy = QVBoxLayout(); empty_copy.setContentsMargins(0, 0, 0, 0); empty_copy.setSpacing(2)
+        empty_title = QLabel("Select your custom_addons folder"); empty_title.setObjectName("sectionTitle"); empty_copy.addWidget(empty_title)
+        empty_hint = QLabel("Drag a folder here or browse to choose one. Your original files will never be modified."); empty_hint.setObjectName("muted"); empty_hint.setWordWrap(True); empty_copy.addWidget(empty_hint)
+        empty_layout.addLayout(empty_copy, 1)
+        self.empty_browse = QPushButton("Browse folders"); self.empty_browse.clicked.connect(self._browse); empty_layout.addWidget(self.empty_browse, 0, Qt.AlignmentFlag.AlignVCenter)
         self.edit = QLineEdit(); self.edit.setPlaceholderText("Selected custom_addons folder")
         self.edit.setToolTip("The full selected folder path")
         self.edit.textChanged.connect(self._path_text_changed)
         browse = QPushButton("Browse…"); browse.setObjectName("secondary"); browse.clicked.connect(self._browse)
         clear = QPushButton("Clear"); clear.setObjectName("secondary"); clear.clicked.connect(lambda: self.setPath(""))
-        self.compact = QWidget(); compact_layout = QHBoxLayout(self.compact); compact_layout.setContentsMargins(0, 0, 0, 0)
+        self.compact = QWidget(); self.compact.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed); compact_layout = QHBoxLayout(self.compact); compact_layout.setContentsMargins(0, 0, 0, 0)
         compact_layout.addWidget(self.edit, 1); compact_layout.addWidget(browse); compact_layout.addWidget(clear)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.addWidget(self.empty_state); root.addWidget(self.compact)
         self._update_mode(""); self.setAcceptDrops(True)

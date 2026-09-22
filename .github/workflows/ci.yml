@@ -35,3 +35,14 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           python -c "from PySide6.QtWidgets import QApplication; import odoo_migrator.ui.app; app=QApplication([]); print('desktop smoke ok')"
+      - name: Capture GUI screenshots
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python scripts/capture_gui_screenshots.py --output gui-screenshots
+      - name: Upload GUI screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: OdooAddonMigrator-GUI-Screenshots
+          path: gui-screenshots
+          if-no-files-found: error

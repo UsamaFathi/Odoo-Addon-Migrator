@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTableView, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTableView, QVBoxLayout, QWidget, QSizePolicy
 
 from odoo_migrator.ui.models.addons_model import AddonsModel
 from odoo_migrator.ui.models.application_state import suggested_output_path
@@ -25,7 +25,8 @@ class ProjectPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.path_picker = PathPicker(); self.path_picker.pathChanged.connect(self._path_changed)
-        self.source = QComboBox(); self.target = QComboBox()
+        self.source = QComboBox(); self.source.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.target = QComboBox(); self.target.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.source.setPlaceholderText("Detect after scan"); self.target.setPlaceholderText("Choose target")
         self.source.currentTextChanged.connect(lambda value: value and self.sourceChanged.emit(int(value)))
         self.target.currentTextChanged.connect(lambda value: value and self.targetChanged.emit(int(value)))
@@ -46,27 +47,28 @@ class ProjectPage(QWidget):
         self._set_controls_enabled(False)
 
     def _build(self) -> None:
-        main = QVBoxLayout(self); main.setContentsMargins(28, 24, 28, 20); main.setSpacing(14)
+        main = QVBoxLayout(self); main.setContentsMargins(28, 20, 28, 16); main.setSpacing(8)
         main.addWidget(SectionHeader("Project", "Select the custom addons you want to migrate. Your original files will never be modified."))
-        setup = SurfaceCard(); setup_layout = QVBoxLayout(setup); setup_layout.setContentsMargins(18, 16, 18, 16); setup_layout.setSpacing(12)
+        setup = SurfaceCard(); setup.setObjectName("projectSetupCard"); setup.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum); self.setup_card = setup
+        setup_layout = QVBoxLayout(setup); setup_layout.setContentsMargins(18, 14, 18, 14); setup_layout.setSpacing(9)
         path_label = QLabel("CUSTOM ADDONS FOLDER"); path_label.setObjectName("eyebrow"); setup_layout.addWidget(path_label); setup_layout.addWidget(self.path_picker)
         version_row = QHBoxLayout(); version_row.setSpacing(14)
-        version_row.addLayout(self._field("SOURCE VERSION", self.source)); version_row.addLayout(self._field("TARGET VERSION", self.target)); version_row.addStretch()
+        version_row.addLayout(self._field("SOURCE VERSION", self.source), 1); version_row.addLayout(self._field("TARGET VERSION", self.target), 1)
         setup_layout.addLayout(version_row)
         output_row = QHBoxLayout(); output_row.addLayout(self._field("OUTPUT FOLDER", self.output), 1); setup_layout.addLayout(output_row)
-        main.addWidget(setup); main.addWidget(self.warning); main.addWidget(self.detection)
-        metric_row = QHBoxLayout(); metric_row.setSpacing(9)
+        main.addWidget(setup, 0); main.addWidget(self.warning, 0); main.addWidget(self.detection, 0)
+        metric_row = QHBoxLayout(); metric_row.setSpacing(8)
         for label in ("Addons", "Python", "XML", "JavaScript", "Security"):
             card = MetricCard(label); self.metrics.append(card); metric_row.addWidget(card)
-        main.addLayout(metric_row)
-        main.addWidget(self.sources)
-        table_header = QHBoxLayout(); title = QLabel("Detected addons"); title.setObjectName("sectionTitle"); table_header.addWidget(title); table_header.addStretch(); table_header.addWidget(self.module_search); main.addLayout(table_header)
+        main.addLayout(metric_row, 0)
+        main.addWidget(self.sources, 0)
+        table_header = QHBoxLayout(); title = QLabel("Detected addons"); title.setObjectName("sectionTitle"); table_header.addWidget(title); table_header.addStretch(); table_header.addWidget(self.module_search); main.addLayout(table_header, 0)
         main.addWidget(self.modules, 1)
-        action_bar = QHBoxLayout(); action_bar.addStretch(); action_bar.addWidget(self.analyze_button); main.addLayout(action_bar)
+        action_bar = QHBoxLayout(); action_bar.addStretch(); action_bar.addWidget(self.analyze_button); main.addLayout(action_bar, 0)
 
     @staticmethod
     def _field(label: str, widget: QWidget) -> QVBoxLayout:
-        layout = QVBoxLayout(); layout.setSpacing(4); caption = QLabel(label); caption.setObjectName("eyebrow"); layout.addWidget(caption); layout.addWidget(widget); return layout
+        layout = QVBoxLayout(); layout.setSpacing(3); caption = QLabel(label); caption.setObjectName("fieldLabel"); layout.addWidget(caption); layout.addWidget(widget); return layout
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         self.source.setEnabled(enabled); self.target.setEnabled(enabled); self.output.setEnabled(enabled)
