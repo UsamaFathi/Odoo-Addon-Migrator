@@ -2,6 +2,8 @@
 
 Odoo Addon Migrator is an independent, local-first desktop and CLI assistant for moving custom addons upward across Odoo 14–19. It composes adjacent, source-aware migration packs and keeps the original addon directory untouched by default.
 
+Current release candidate: **v1.0.0-rc.2**. RC1 remains the historical public release; RC2 is prepared for Windows workflow acceptance before publication.
+
 ## Desktop workflow
 
 Install the Windows application or run `odoo-migrator-ui`, choose a `custom_addons` folder, review the detected source version and registry-provided target versions, then analyze, review findings, migrate to a separate folder, validate statically, and open the report or diff.

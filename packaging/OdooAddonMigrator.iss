@@ -1,6 +1,6 @@
 #define MyAppName "Odoo Addon Migrator"
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.0rc1"
+#define MyAppVersion "1.0.0rc2"
 #endif
 #define MyAppExeName "OdooAddonMigrator.exe"
 
