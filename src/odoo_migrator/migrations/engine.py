@@ -13,11 +13,14 @@ import shutil as _shutil
 from collections.abc import Callable, Iterable
 from odoo_migrator import __version__
 from odoo_migrator.sources.registry import SourceSnapshot
+from odoo_migrator.sources.indexer import SourceIndexer
+from odoo_migrator.sources.diff import compare_indexes
 from odoo_migrator.validation import ValidationItem, validate_project
 
 from odoo_migrator.core.planner import MigrationPlan, build_plan
 from .base import Change, MigrationRule
 from .registry import MigrationPackRegistry, default_registry
+from .autonomous import autonomous_resolvers_for
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,22 @@ class MigrationEngine:
 
         changes: list[Change] = []
         planned_rules = [rule for step in plan.steps for rule in self.rules_for(step.source, step.target)]
+        planned_resolvers = [resolver for step in plan.steps for resolver in autonomous_resolvers_for(step.source, step.target)]
+        snapshot_tuple = tuple(source_snapshots or ())
+        snapshot_map = {snapshot.version: snapshot for snapshot in snapshot_tuple}
+        if source_snapshot is not None:
+            snapshot_map.setdefault(source_snapshot.version, source_snapshot)
+        if target_snapshot is not None:
+            snapshot_map.setdefault(target_snapshot.version, target_snapshot)
+        source_indexes = {}
+        indexer = SourceIndexer()
+        for version, snapshot in snapshot_map.items():
+            source_indexes[version] = indexer.index(
+                snapshot.path,
+                source_commit=snapshot.actual_commit,
+                source_mode=snapshot.source_mode.value,
+                source_version=version,
+            )
         try:
             report("Creating safe output copy", 5)
             for step in plan.steps:
@@ -88,6 +107,20 @@ class MigrationEngine:
                 for rule in self.rules_for(step.source, step.target):
                     if rule.automatic:
                         changes.extend(rule.apply(work_root, dry_run=dry_run))
+                if step.source in source_indexes and step.target in source_indexes:
+                    custom_index = indexer.index(work_root)
+                    diff = compare_indexes(source_indexes[step.source], source_indexes[step.target])
+                    for resolver in autonomous_resolvers_for(step.source, step.target):
+                        changes.extend(resolver.apply(
+                            work_root,
+                            custom_index,
+                            source_indexes[step.source],
+                            source_indexes[step.target],
+                            diff,
+                            dry_run=dry_run,
+                        ))
+                        if not dry_run:
+                            custom_index = indexer.index(work_root)
         except Exception:
             if staging_root and staging_root.exists():
                 shutil.rmtree(staging_root, ignore_errors=True)
@@ -112,17 +145,30 @@ class MigrationEngine:
                 "migration_path": [step.key for step in plan.steps],
                 "source_snapshot": source_snapshot.as_dict() if source_snapshot else None,
                 "target_snapshot": target_snapshot.as_dict() if target_snapshot else None,
-                "source_snapshots": [snapshot.as_dict() for snapshot in (source_snapshots or ())],
+                "source_snapshots": [snapshot.as_dict() for snapshot in snapshot_tuple],
                 "validation": {"state": "not_run", "level": 0},
                 "rules": sorted({c.rule_id for c in changes}),
                 "rule_versions": {
-                    rule.rule_id: {
-                        "source": rule.source,
-                        "target": rule.target,
-                        "classification": rule.classification.value,
-                        "automatic": rule.automatic,
-                    }
-                    for rule in planned_rules
+                    **{
+                        rule.rule_id: {
+                            "source": rule.source,
+                            "target": rule.target,
+                            "classification": rule.classification.value,
+                            "automatic": rule.automatic,
+                        }
+                        for rule in planned_rules
+                    },
+                    **{
+                        resolver.rule_id: {
+                            "source": resolver.source,
+                            "target": resolver.target,
+                            "classification": "safe_auto_fix",
+                            "automatic": True,
+                            "autonomous": True,
+                            "confidence": resolver.confidence,
+                        }
+                        for resolver in planned_resolvers
+                    },
                 },
                 "changes": [
                     {"rule_id": c.rule_id, "path": c.path.relative_to(work_root).as_posix(), "description": c.description,

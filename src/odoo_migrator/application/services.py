@@ -8,6 +8,7 @@ from odoo_migrator.analysis.compat import Finding, compare_custom_to_target, ded
 from odoo_migrator.analysis.project import ProjectScan, scan_custom_addons
 from odoo_migrator.core.planner import MigrationPlan, build_plan
 from odoo_migrator.migrations.engine import MigrationEngine, MigrationResult
+from odoo_migrator.migrations.autonomous import autonomous_resolvers_for
 from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.sources.registry import SourceMode, SourceSelection, SourceSnapshot
@@ -203,6 +204,38 @@ class AnalysisService:
                             candidates.append(candidate)
                             step_candidates.append(candidate)
                         rule.apply(planning_root, dry_run=False)
+
+                    resolver_index = indexer.index(planning_root, cache_dir=cache_dir)
+                    for resolver in autonomous_resolvers_for(step.source, step.target):
+                        proposed_changes = resolver.apply(
+                            planning_root,
+                            resolver_index,
+                            indexes[step.source],
+                            indexes[step.target],
+                            diff,
+                            dry_run=True,
+                        )
+                        if not proposed_changes:
+                            continue
+                        changed = True
+                        for change in proposed_changes:
+                            relative = change.path.relative_to(planning_root).as_posix()
+                            key = (change.rule_id, relative, step_key)
+                            if key in candidate_keys:
+                                continue
+                            candidate_keys.add(key)
+                            candidate = AutoFixCandidate(change.rule_id, relative, change.description, step_key)
+                            candidates.append(candidate)
+                            step_candidates.append(candidate)
+                        resolver.apply(
+                            planning_root,
+                            resolver_index,
+                            indexes[step.source],
+                            indexes[step.target],
+                            diff,
+                            dry_run=False,
+                        )
+                        resolver_index = indexer.index(planning_root, cache_dir=cache_dir)
                     round_after = indexer.project_fingerprint(planning_root)
                     if not changed or round_after == round_before:
                         break
