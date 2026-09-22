@@ -95,10 +95,11 @@ def suggested_output_path(root: Path, target: int) -> Path:
 
 
 def finding_counts(analysis: AnalysisResult | None) -> dict[str, int]:
-    counts = {"auto_fix": 0, "blocker": 0, "review_required": 0, "warning": 0}
+    counts = {"auto_fix": 0, "resolved": 0, "blocker": 0, "review_required": 0, "warning": 0}
     if not analysis:
         return counts
     counts["auto_fix"] = len(analysis.auto_fix_candidates)
+    counts["resolved"] = len(getattr(analysis, "resolved_findings", ()))
     for finding in analysis.findings:
         key = finding.severity.value
         if key in counts:

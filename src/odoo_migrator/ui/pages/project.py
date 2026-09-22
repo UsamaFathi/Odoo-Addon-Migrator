@@ -74,7 +74,7 @@ class ProjectPage(QWidget):
         self.model = AddonsModel(self); self.modules = QTableView(); self.modules.setModel(self.model); self.modules.setSortingEnabled(True); self.modules.setAlternatingRowColors(True)
         self.modules.setSelectionBehavior(QTableView.SelectRows); self.modules.verticalHeader().setDefaultSectionSize(36); self.modules.horizontalHeader().setStretchLastSection(True)
         self.module_search = QLineEdit(); self.module_search.setPlaceholderText("Filter detected addons…"); self.module_search.textChanged.connect(self._filter_modules)
-        self.analyze_button = QPushButton("Analyze project  →"); self.analyze_button.clicked.connect(self.analyzeRequested); self.analyze_button.setEnabled(False)
+        self.analyze_button = QPushButton("Analyze & auto-resolve  →"); self.analyze_button.clicked.connect(self.analyzeRequested); self.analyze_button.setEnabled(False)
         self._build()
         self._set_controls_enabled(False)
 

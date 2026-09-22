@@ -18,7 +18,7 @@ class AnalysisPage(QWidget):
         self.stage = QLabel("Ready to analyze"); self.stage.setObjectName("muted")
         self.context = QLabel(""); self.context.setObjectName("muted")
         self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.setValue(0)
-        self.cards = {name: MetricCard(title) for name, title in (("addons", "Modules"), ("auto_fix", "Auto fixes"), ("blocker", "Blockers"), ("review_required", "Review required"), ("warning", "Warnings"), ("steps", "Migration steps"))}
+        self.cards = {name: MetricCard(title) for name, title in (("addons", "Modules"), ("auto_fix", "Auto fixes"), ("resolved", "Auto-resolved"), ("blocker", "Blockers"), ("review_required", "Review required"), ("steps", "Migration steps"))}
         self.findings = FindingsTable(); self.details = FindingDetails(); self.findings.findingSelected.connect(self.details.setFinding)
         self.fixes = QListWidget(); self.fixes.setMinimumHeight(118)
         self.blocker_banner = StatusBadge("", "badgeDanger"); self.blocker_banner.hide()
@@ -54,10 +54,20 @@ class AnalysisPage(QWidget):
     def set_analysis(self, analysis) -> None:
         counts = finding_counts(analysis)
         self.cards["addons"].set_value(analysis.scan.module_count)
-        for key in ("auto_fix", "blocker", "review_required", "warning"): self.cards[key].set_value(counts[key])
+        for key in ("auto_fix", "resolved", "blocker", "review_required"): self.cards[key].set_value(counts[key])
         self.cards["steps"].set_value(len(analysis.steps)); self.findings.setFindings(analysis.findings); self.fixes.clear()
         for fix in analysis.auto_fix_candidates: self.fixes.addItem(f"✓  {fix.rule_id}  •  {fix.path}  •  {fix.description}")
         if not analysis.auto_fix_candidates: self.fixes.addItem("No automatic changes planned")
-        blocked = bool(analysis.blockers); self.migrate_button.setEnabled(not blocked); self.blocker_banner.setVisible(blocked)
-        if blocked: self.blocker_banner.setText(f"Migration blocked  •  Resolve {len(analysis.blockers)} blocking finding(s) before continuing.")
-        self.stage.setText("Migration blocked" if blocked else "Analysis complete"); self.progress.setValue(100)
+        resolved = len(getattr(analysis, "resolved_findings", ()))
+        if resolved:
+            self.fixes.insertItem(0, f"✓  Autonomous planning resolved {resolved} compatibility finding(s)")
+        blocked = bool(analysis.blockers)
+        self.migrate_button.setEnabled(not blocked)
+        self.migrate_button.setText("Continue autonomous migration  →")
+        self.blocker_banner.setVisible(blocked)
+        if blocked:
+            self.blocker_banner.setText(
+                f"Autonomous pass resolved {resolved} finding(s)  •  {len(analysis.blockers)} unresolved blocker(s) remain."
+            )
+        self.stage.setText("Autonomous resolution incomplete" if blocked else "Ready for autonomous migration")
+        self.progress.setValue(100)

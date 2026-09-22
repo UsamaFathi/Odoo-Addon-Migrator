@@ -16,7 +16,7 @@ class ResultsPage(QWidget):
         super().__init__(parent)
         self.summary = QLabel(); self.summary.setWordWrap(True); self.output = QLabel(); self.output.setWordWrap(True); self.output.setObjectName("muted")
         self.validation = StatusBadge("Static validation pending", "badgeInfo")
-        self.metrics = {key: MetricCard(label) for key, label in (("fixes", "Automatic fixes"), ("review", "Manual review"), ("blockers", "Blockers"))}
+        self.metrics = {key: MetricCard(label) for key, label in (("fixes", "Automatic fixes"), ("resolved", "Auto-resolved"), ("review", "Review notes"), ("blockers", "Blockers"))}
         self.report = QPushButton("Open migration report"); self.report.clicked.connect(self.openReport); self.diff = QPushButton("Review changes / diff"); self.diff.clicked.connect(self.openDiff)
         self.output_button = QPushButton("Open output folder"); self.output_button.clicked.connect(self.openOutput)
         self.new_button = QPushButton("Start another project"); self.new_button.setObjectName("secondary"); self.new_button.clicked.connect(self.newProject)
@@ -50,6 +50,9 @@ class ResultsPage(QWidget):
         plan = getattr(analysis, "plan", None)
         path_text = f"Odoo {plan.source} → Odoo {plan.target}\n\n" if plan else ""
         issue_text = f" ({issue_count} issue(s))" if issue_count else ""
-        self.summary.setText(f"{path_text}Automatic fixes applied: {len(result.changes)}\nManual review items remaining: {len(analysis.review_required)}\nBlockers: {len(analysis.blockers)}\nStatic Validation: {'Passed' if passed else 'Failed'}{issue_text}\n\nStatic validation {'passed' if passed else 'failed'}. Install and test the migrated addons on the target Odoo version before production use.")
+        self.summary.setText(f"{path_text}Automatic fixes applied: {len(result.changes)}\nAuto-resolved findings: {len(getattr(analysis, 'resolved_findings', ()))}\nReview notes remaining: {len(analysis.review_required)}\nBlockers: {len(analysis.blockers)}\nStatic Validation: {'Passed' if passed else 'Failed'}{issue_text}\n\nStatic validation {'passed' if passed else 'failed'}. Install and test the migrated addons on the target Odoo version before production use.")
         self.output.setText(f"Output folder\n{result.output}")
-        self.metrics["fixes"].set_value(len(result.changes)); self.metrics["review"].set_value(len(analysis.review_required)); self.metrics["blockers"].set_value(len(analysis.blockers))
+        self.metrics["fixes"].set_value(len(result.changes))
+        self.metrics["resolved"].set_value(len(getattr(analysis, "resolved_findings", ())))
+        self.metrics["review"].set_value(len(analysis.review_required))
+        self.metrics["blockers"].set_value(len(analysis.blockers))
