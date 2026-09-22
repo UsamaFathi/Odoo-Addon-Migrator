@@ -153,9 +153,16 @@ def _rewrite_tag(match: re.Match[str]) -> tuple[str, bool]:
         cursor = item.end()
     pieces.append(body[cursor:])
     rewritten_body = "".join(pieces)
+    stripped = rewritten_body.rstrip()
+    trailing = rewritten_body[len(stripped):]
+    self_closing = stripped.endswith("/")
+    if self_closing:
+        rewritten_body = stripped[:-1]
     for key, expression in additions.items():
         if key not in replaced_inline:
             rewritten_body += f' {key}="{html.escape(expression, quote=True)}"'
+    if self_closing:
+        rewritten_body += "/" + trailing
 
     return f"<{name}{rewritten_body}>", True
 
