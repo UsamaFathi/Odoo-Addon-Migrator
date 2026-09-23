@@ -322,31 +322,21 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         root = Path(selected).expanduser().resolve()
-        source = self.project_page.selected_source()
-        target = self.project_page.selected_target()
-        versions = list(range(source, target + 1)) if source is not None and target is not None else [version]
-        configured: list[int] = []
-        failures: dict[int, str] = {}
-        for candidate in versions:
-            try:
-                resolve_enterprise_source(root, candidate)
-            except EnterpriseSourceError as exc:
-                failures[candidate] = str(exc)
-                continue
-            self.enterprise_sources[candidate] = root
-            self.settings.save_enterprise_source(candidate, root)
-            configured.append(candidate)
-        if version not in configured:
+        try:
+            resolve_enterprise_source(root, version)
+        except EnterpriseSourceError as exc:
             self._show_error(
                 f"Could not resolve Odoo {version} Enterprise source from the selected repository.",
-                failures.get(version, ""),
+                str(exc),
             )
             return
+        self.enterprise_sources[version] = root
+        self.settings.save_enterprise_source(version, root)
         self._refresh_source_cards()
         self._log(
             "Enterprise Odoo repository configured",
             root=root,
-            versions=",".join(str(item) for item in configured),
+            version=version,
         )
 
     def _forget_enterprise_source(self, version: int) -> None:

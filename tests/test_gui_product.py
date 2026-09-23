@@ -28,6 +28,8 @@ from odoo_migrator.ui.widgets.finding_details import FindingDetails
 from odoo_migrator.ui.widgets.source_status import SourceStatus
 from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.sources.registry import SourceMode, SourceSelection, SourceSnapshot
+from odoo_migrator.sources.enterprise import EnterpriseSourceError
+import odoo_migrator.ui.main_window as main_window_module
 
 
 @pytest.fixture(scope="module")
@@ -222,6 +224,106 @@ def test_local_source_mapping_persists_only_in_isolated_settings(tmp_path: Path)
     assert loaded and loaded.mode is SourceMode.LOCAL_EXACT_SOURCE and loaded.path == root
     settings.forget_source_selection(18)
     assert settings.load_source_selection(18) is None
+
+
+def _enterprise_selection_window(qapp, tmp_path: Path):
+    settings = settings_module.DesktopSettings(
+        QSettings(str(tmp_path / "enterprise.ini"), QSettings.IniFormat)
+    )
+    paths = {version: tmp_path / f"enterprise-{version}" for version in (16, 18, 19)}
+    for path in paths.values():
+        path.mkdir()
+    window = MainWindow(settings=settings)
+    for version, path in paths.items():
+        window.enterprise_sources[version] = path
+        settings.save_enterprise_source(version, path)
+    return window, settings, paths
+
+
+def test_enterprise_selection_is_strictly_per_version(qapp, tmp_path: Path, monkeypatch):
+    window, settings, paths = _enterprise_selection_window(qapp, tmp_path)
+    selected = tmp_path / "enterprise-17"
+    selected.mkdir()
+    calls = []
+    monkeypatch.setattr(
+        main_window_module.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(selected),
+    )
+    monkeypatch.setattr(
+        main_window_module,
+        "resolve_enterprise_source",
+        lambda root, version: calls.append((Path(root), version)),
+    )
+
+    window._choose_enterprise_source(17)
+
+    assert calls == [(selected.resolve(), 17)]
+    assert window.enterprise_sources == {
+        16: paths[16], 17: selected.resolve(), 18: paths[18], 19: paths[19]
+    }
+    assert settings.load_enterprise_source(16) == paths[16]
+    assert settings.load_enterprise_source(17) == selected.resolve()
+    assert settings.load_enterprise_source(18) == paths[18]
+    assert settings.load_enterprise_source(19) == paths[19]
+    window.close()
+
+
+def test_enterprise_change_and_forget_only_affect_clicked_version(qapp, tmp_path: Path, monkeypatch):
+    window, settings, paths = _enterprise_selection_window(qapp, tmp_path)
+    first = tmp_path / "enterprise-17-first"; first.mkdir()
+    second = tmp_path / "enterprise-17-second"; second.mkdir()
+    selected = iter((first, second))
+    monkeypatch.setattr(
+        main_window_module.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(next(selected)),
+    )
+    monkeypatch.setattr(main_window_module, "resolve_enterprise_source", lambda root, version: None)
+
+    window._choose_enterprise_source(17)
+    window._choose_enterprise_source(17)
+    assert window.enterprise_sources[17] == second.resolve()
+    assert settings.load_enterprise_source(16) == paths[16]
+    assert settings.load_enterprise_source(17) == second.resolve()
+    assert settings.load_enterprise_source(18) == paths[18]
+    assert settings.load_enterprise_source(19) == paths[19]
+
+    window._forget_enterprise_source(17)
+    assert 17 not in window.enterprise_sources
+    assert settings.load_enterprise_source(17) is None
+    assert window.enterprise_sources[16] == paths[16]
+    assert window.enterprise_sources[18] == paths[18]
+    assert window.enterprise_sources[19] == paths[19]
+    assert settings.load_enterprise_source(16) == paths[16]
+    assert settings.load_enterprise_source(18) == paths[18]
+    assert settings.load_enterprise_source(19) == paths[19]
+    window.close()
+
+
+def test_invalid_enterprise_selection_does_not_mutate_other_versions(qapp, tmp_path: Path, monkeypatch):
+    window, settings, paths = _enterprise_selection_window(qapp, tmp_path)
+    invalid = tmp_path / "invalid-enterprise"; invalid.mkdir()
+    errors = []
+    monkeypatch.setattr(
+        main_window_module.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(invalid),
+    )
+    monkeypatch.setattr(
+        main_window_module,
+        "resolve_enterprise_source",
+        lambda root, version: (_ for _ in ()).throw(EnterpriseSourceError("wrong version")),
+    )
+    monkeypatch.setattr(window, "_show_error", lambda title, details="": errors.append((title, details)))
+
+    window._choose_enterprise_source(17)
+
+    assert errors == [("Could not resolve Odoo 17 Enterprise source from the selected repository.", "wrong version")]
+    assert window.enterprise_sources == paths
+    for version, path in paths.items():
+        assert settings.load_enterprise_source(version) == path
+    window.close()
 
 
 def test_rc2_shell_is_usable_at_standard_windows_size(qapp):
