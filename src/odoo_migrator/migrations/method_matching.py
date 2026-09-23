@@ -52,8 +52,8 @@ def _shape_similarity(left: dict, right: dict) -> float:
     return sum(left.get(key) == right.get(key) for key in keys) / len(keys)
 
 
-def method_similarity(source_method: str, source_features: dict,
-                      target_method: str, target_features: dict) -> tuple[float, tuple[str, ...]]:
+def method_similarity_components(source_method: str, source_features: dict,
+                                 target_method: str, target_features: dict) -> dict[str, float]:
     structure = SequenceMatcher(
         None,
         source_features.get("structure", ()),
@@ -79,26 +79,34 @@ def method_similarity(source_method: str, source_features: dict,
         ) / 6.0,
     )
 
+    return {
+        "ast": structure,
+        "calls": calls,
+        "attrs": attributes,
+        "signature": signature,
+        "control": control,
+        "decorators": decorators,
+        "strings": strings,
+        "name": name,
+    }
+
+
+def method_similarity(source_method: str, source_features: dict,
+                      target_method: str, target_features: dict) -> tuple[float, tuple[str, ...]]:
+    components = method_similarity_components(
+        source_method, source_features, target_method, target_features
+    )
     score = (
-        structure * 0.30
-        + calls * 0.22
-        + attributes * 0.13
-        + signature * 0.12
-        + control * 0.08
-        + decorators * 0.05
-        + strings * 0.05
-        + name * 0.05
+        components["ast"] * 0.30
+        + components["calls"] * 0.22
+        + components["attrs"] * 0.13
+        + components["signature"] * 0.12
+        + components["control"] * 0.08
+        + components["decorators"] * 0.05
+        + components["strings"] * 0.05
+        + components["name"] * 0.05
     )
-    evidence = (
-        f"ast={structure:.2f}",
-        f"calls={calls:.2f}",
-        f"attrs={attributes:.2f}",
-        f"signature={signature:.2f}",
-        f"control={control:.2f}",
-        f"decorators={decorators:.2f}",
-        f"strings={strings:.2f}",
-        f"name={name:.2f}",
-    )
+    evidence = tuple(f"{key}={value:.2f}" for key, value in components.items())
     return score, evidence
 
 
