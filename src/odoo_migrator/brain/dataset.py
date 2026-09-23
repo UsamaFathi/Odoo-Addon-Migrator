@@ -284,13 +284,101 @@ def _weak_rename_samples(source: OdooIndex, target: OdooIndex, step: str) -> lis
     return samples
 
 
-def build_method_dataset(indexes: Mapping[int, OdooIndex], source: int, target: int) -> Dataset:
+
+def _history_rename_samples(
+    source: OdooIndex,
+    target: OdooIndex,
+    step: str,
+    pairs: set[tuple[str, str]],
+    *,
+    hard_negatives: int = 3,
+) -> list[MethodTrainingSample]:
+    if not pairs:
+        return []
+    diff = compare_indexes(source, target)
+    samples: list[MethodTrainingSample] = []
+
+    for old_name, new_name in sorted(pairs):
+        matches = [
+            change
+            for change in diff.model_changes
+            if old_name in change.removed_methods and new_name in change.added_methods
+        ]
+        if len(matches) != 1:
+            continue
+        change = matches[0]
+        old_model = source.models.get(change.model)
+        new_model = target.models.get(change.model)
+        if old_model is None or new_model is None:
+            continue
+        old_features = old_model.method_features.get(old_name)
+        new_features = new_model.method_features.get(new_name)
+        if not old_features or not new_features:
+            continue
+        if min(old_features.get("node_count", 0), new_features.get("node_count", 0)) < 6:
+            continue
+
+        samples.append(MethodTrainingSample(
+            step,
+            change.model,
+            old_name,
+            new_name,
+            _feature_pair(old_name, old_features, new_name, new_features),
+            1,
+            1.25,
+            "git_history_rename",
+        ))
+
+        negatives = []
+        for candidate_name in sorted(change.added_methods):
+            if candidate_name == new_name:
+                continue
+            candidate_features = new_model.method_features.get(candidate_name)
+            if not candidate_features or candidate_features.get("node_count", 0) < 6:
+                continue
+            features = _feature_pair(
+                old_name, old_features, candidate_name, candidate_features
+            )
+            hardness = (
+                features["ast"] * 0.40
+                + features["calls"] * 0.25
+                + features["attrs"] * 0.15
+                + features["signature"] * 0.10
+                + features["name"] * 0.10
+            )
+            negatives.append((hardness, candidate_name, features))
+        for _, candidate_name, features in sorted(negatives, reverse=True)[:hard_negatives]:
+            samples.append(MethodTrainingSample(
+                step,
+                change.model,
+                old_name,
+                candidate_name,
+                features,
+                0,
+                1.0,
+                "git_history_hard_negative",
+            ))
+    return samples
+
+def build_method_dataset(
+    indexes: Mapping[int, OdooIndex],
+    source: int,
+    target: int,
+    *,
+    history_pairs: Mapping[str, set[tuple[str, str]]] | None = None,
+) -> Dataset:
     samples: list[MethodTrainingSample] = []
     for version in range(source, target):
         old = indexes[version]
         new = indexes[version + 1]
         step = f"{version}_to_{version + 1}"
         samples.extend(_same_name_samples(old, new, step))
+        samples.extend(_history_rename_samples(
+            old,
+            new,
+            step,
+            set((history_pairs or {}).get(step, set())),
+        ))
         samples.extend(_exact_semantic_rename_samples(old, new, step))
         samples.extend(_weak_rename_samples(old, new, step))
 
