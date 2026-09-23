@@ -28,6 +28,8 @@ class BrainMigrationResult:
     metadata_path: Path
     validation_state: str
     validation_issues: tuple[ValidationItem, ...]
+    report_path: Path | None = None
+    diff_path: Path | None = None
 
 
 def _append_change(
