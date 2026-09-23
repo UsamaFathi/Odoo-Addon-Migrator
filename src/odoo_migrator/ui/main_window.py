@@ -437,8 +437,13 @@ class MainWindow(QMainWindow):
     @Slot(int, str, int)
     def _task_stage(self, token: int, stage: str, percent: int) -> None:
         if token != self.state.operation_token: return
-        if self.stack.currentWidget() is self.analysis_scroll: self.analysis_page.set_progress(stage, percent)
-        elif self.stack.currentWidget() is self.migration_scroll: self.migration_page.set_progress(stage, percent)
+        self._log("Task progress", operation=self.state.operation_name, stage=stage, percent=percent)
+        if self.stack.currentWidget() is self.project_scroll:
+            self.project_page.set_brain_progress(stage, percent)
+        elif self.stack.currentWidget() is self.analysis_scroll:
+            self.analysis_page.set_progress(stage, percent)
+        elif self.stack.currentWidget() is self.migration_scroll:
+            self.migration_page.set_progress(stage, percent)
 
     @Slot(int, object)
     def _task_succeeded(self, token: int, result) -> None:
