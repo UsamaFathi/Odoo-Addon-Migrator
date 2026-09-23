@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
         self.enterprise_sources: dict[int, Path] = {}
         self.brain_path: Path | None = None
         self.brain_pack: BrainPack | None = None
-        self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._task_success_callback = None; self._task_busy_callback = None; self._auto_migrate_pending = False; self._log_dir = configure_logging()
+        self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._task_name: str | None = None; self._task_success_callback = None; self._task_busy_callback = None; self._auto_migrate_pending = False; self._log_dir = configure_logging()
         if settings is None:
             self.settings = DesktopSettings()
         elif isinstance(settings, QSettings):
@@ -422,7 +422,7 @@ class MainWindow(QMainWindow):
 
     def _start_task(self, name: str, operation, args: tuple, success, busy_callback) -> None:
         if self._busy: self._show_error("Another operation is still running."); return
-        self._busy = True; token = self.state.begin_operation(name); self._task_success_callback = success; self._task_busy_callback = busy_callback; busy_callback(True)
+        self._busy = True; self._task_name = name; token = self.state.begin_operation(name); self._task_success_callback = success; self._task_busy_callback = busy_callback; busy_callback(True)
         thread = QThread(self); worker = TaskWorker(token, operation, *args); worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.stage.connect(self._task_stage, Qt.ConnectionType.QueuedConnection)
@@ -437,7 +437,7 @@ class MainWindow(QMainWindow):
     @Slot(int, str, int)
     def _task_stage(self, token: int, stage: str, percent: int) -> None:
         if token != self.state.operation_token: return
-        self._log("Task progress", operation=self.state.operation_name, stage=stage, percent=percent)
+        self._log("Task progress", operation=self._task_name or "unknown", stage=stage, percent=percent)
         if self.stack.currentWidget() is self.project_scroll:
             self.project_page.set_brain_progress(stage, percent)
         elif self.stack.currentWidget() is self.analysis_scroll:
@@ -498,6 +498,7 @@ class MainWindow(QMainWindow):
         self._busy = False
         if callback: callback(False)
         self._thread = self._worker = None
+        self._task_name = None
         self._task_success_callback = self._task_busy_callback = None
         if auto_migrate: QTimer.singleShot(0, self._migrate)
 
