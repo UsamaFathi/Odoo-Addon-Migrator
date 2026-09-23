@@ -17,10 +17,13 @@ from odoo_migrator.validation import validate_project
 from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.migrations.registry import UnsupportedMigrationPathError
 from odoo_migrator.sources.registry import SourceMode
+from odoo_migrator.brain import BrainPack, BrainRuntimeMigrator, BrainTrainer
 
 app = typer.Typer(help="Local source-aware Odoo custom-addon migration assistant.")
 source_app = typer.Typer(help="Manage local official Odoo Community source snapshots.")
+brain_app = typer.Typer(help="Train and use the reusable Migration Brain.")
 app.add_typer(source_app, name="source")
+app.add_typer(brain_app, name="brain")
 console = Console()
 
 
@@ -70,6 +73,91 @@ def source_info(version: int, latest: bool=False):
     if not snap:
         raise typer.Exit("Source snapshot not cached yet.")
     console.print_json(json.dumps(snap.as_dict()))
+
+
+@brain_app.command("build")
+def brain_build(
+    output: Path=typer.Option(
+        Path.home() / ".odoo-addon-migrator" / "brain" / "migration_brain.omb",
+        "--output",
+    ),
+    source: int=typer.Option(14, "--from"),
+    target: int=typer.Option(19, "--to"),
+    enterprise: Path | None=typer.Option(
+        None,
+        "--enterprise",
+        help="Optional local Enterprise repo/folder containing version branches or folders.",
+    ),
+):
+    """Train once from official source and write a reusable .omb brain pack."""
+    trainer = BrainTrainer()
+    try:
+        with console.status("Training Migration Brain from Odoo source..."):
+            result = trainer.build(
+                output,
+                source=source,
+                target=target,
+                enterprise_root=enterprise,
+            )
+    except (ValueError, SourceManagerError) as exc:
+        console.print(f"[red]{_terminal_text(exc)}[/red]")
+        raise typer.Exit(2)
+    console.print(f"[green]Migration Brain ready:[/green] {result.output}")
+    console.print(f"Training samples: {result.training_samples}")
+    console.print(f"Method renames learned: {result.method_renames}")
+    console.print(f"Model renames learned: {result.model_renames}")
+    console.print(f"Dependency renames learned: {result.dependency_renames}")
+    console.print_json(json.dumps(result.validation_metrics))
+
+
+@brain_app.command("info")
+def brain_info(path: Path):
+    """Inspect a trained Migration Brain without loading any Odoo source."""
+    try:
+        brain = BrainPack.load(path)
+    except ValueError as exc:
+        console.print(f"[red]{_terminal_text(exc)}[/red]")
+        raise typer.Exit(2)
+    payload = brain.payload
+    table = Table("Step", "Method renames", "Model renames", "Dependency renames")
+    for key, step in payload.get("steps", {}).items():
+        table.add_row(
+            key,
+            str(len(step.get("method_renames", ()))),
+            str(len(step.get("model_renames", ()))),
+            str(len(step.get("dependency_renames", ()))),
+        )
+    console.print(f"[bold]Brain fingerprint:[/bold] {brain.fingerprint}")
+    console.print(f"[bold]Range:[/bold] Odoo {brain.source} -> {brain.target}")
+    console.print(table)
+    console.print("[bold]Validation metrics[/bold]")
+    console.print_json(json.dumps(payload.get("training", {}).get("validation", {})))
+
+
+@brain_app.command("migrate")
+def brain_migrate(
+    addons: Path,
+    output: Path,
+    brain: Path=typer.Option(..., "--brain"),
+    source: int=typer.Option(..., "--from"),
+    target: int=typer.Option(..., "--to"),
+):
+    """Migrate custom addons using only a trained .omb pack; no Odoo source is indexed."""
+    try:
+        runtime = BrainRuntimeMigrator(brain)
+        result = runtime.migrate(
+            addons,
+            output,
+            source=source,
+            target=target,
+        )
+    except (ValueError, FileExistsError) as exc:
+        console.print(f"[red]{_terminal_text(exc)}[/red]")
+        raise typer.Exit(2)
+    console.print(f"[green]Brain migration complete:[/green] {result.output}")
+    console.print(f"Changes: {len(result.changes)}")
+    console.print(f"Static validation: {result.validation_state}")
+    console.print(f"Metadata: {result.metadata_path}")
 
 
 @app.command()
