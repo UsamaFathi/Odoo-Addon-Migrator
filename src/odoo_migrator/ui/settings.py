@@ -111,6 +111,25 @@ class DesktopSettings:
         self._settings.remove(f"enterprise_sources/{version}")
         self._settings.sync()
 
+    def load_brain_path(self) -> Path | None:
+        value = self._settings.value("migration_brain/path", "")
+        if not value:
+            return None
+        try:
+            path = Path(str(value)).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return path if path.is_file() and path.suffix.casefold() == ".omb" else None
+
+    def save_brain_path(self, path: str | Path) -> None:
+        resolved = Path(path).expanduser().resolve()
+        self._settings.setValue("migration_brain/path", str(resolved))
+        self._settings.sync()
+
+    def forget_brain_path(self) -> None:
+        self._settings.remove("migration_brain/path")
+        self._settings.sync()
+
     def clear(self) -> None:
         self._settings.clear()
         self._settings.sync()
