@@ -13,7 +13,7 @@ from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.migrations.registry import default_registry
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.sources.registry import SourceMode, SourceSelection
-from odoo_migrator.sources.composite import validate_addons_source
+from odoo_migrator.sources.enterprise import EnterpriseSourceError, resolve_enterprise_source
 from odoo_migrator.ui.icons import app_icon
 from odoo_migrator.ui.models.application_state import ApplicationState
 from odoo_migrator.ui.pages.analysis import AnalysisPage
@@ -158,18 +158,39 @@ class MainWindow(QMainWindow):
         self.source_selections[version] = selection; self.settings.save_source_selection(selection, validated=True); self._refresh_source_cards(); self._log("Local Odoo source selected", version=version, path=snapshot.path, commit=snapshot.actual_commit or "unavailable")
 
     def _choose_enterprise_source(self, version: int) -> None:
-        selected = QFileDialog.getExistingDirectory(self, f"Select Odoo {version} Enterprise addons folder")
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            f"Select Enterprise repository or Odoo {version} Enterprise folder",
+        )
         if not selected:
             return
-        try:
-            path = validate_addons_source(selected)
-        except ValueError as exc:
-            self._show_error(str(exc))
+        root = Path(selected).expanduser().resolve()
+        source = self.project_page.selected_source()
+        target = self.project_page.selected_target()
+        versions = list(range(source, target + 1)) if source is not None and target is not None else [version]
+        configured: list[int] = []
+        failures: dict[int, str] = {}
+        for candidate in versions:
+            try:
+                resolve_enterprise_source(root, candidate)
+            except EnterpriseSourceError as exc:
+                failures[candidate] = str(exc)
+                continue
+            self.enterprise_sources[candidate] = root
+            self.settings.save_enterprise_source(candidate, root)
+            configured.append(candidate)
+        if version not in configured:
+            self._show_error(
+                f"Could not resolve Odoo {version} Enterprise source from the selected repository.",
+                failures.get(version, ""),
+            )
             return
-        self.enterprise_sources[version] = path
-        self.settings.save_enterprise_source(version, path)
         self._refresh_source_cards()
-        self._log("Enterprise Odoo source selected", version=version, path=path)
+        self._log(
+            "Enterprise Odoo repository configured",
+            root=root,
+            versions=",".join(str(item) for item in configured),
+        )
 
     def _forget_enterprise_source(self, version: int) -> None:
         self.enterprise_sources.pop(version, None)
