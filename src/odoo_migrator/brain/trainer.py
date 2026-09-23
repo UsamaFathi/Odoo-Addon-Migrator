@@ -21,6 +21,7 @@ from .knowledge import (
     asset_bundle_renames,
     field_renames,
     js_module_renames,
+    signature_adapters,
     step_knowledge,
     xml_id_renames,
 )
@@ -41,6 +42,7 @@ class BrainTrainingResult:
     xml_id_renames: int = 0
     js_module_renames: int = 0
     asset_bundle_renames: int = 0
+    signature_adapters: int = 0
 
 
 def _learned_method_renames(
@@ -330,7 +332,7 @@ class BrainTrainer:
 
         steps: dict[str, dict] = {}
         method_count = model_count = dependency_count = field_count = 0
-        xml_id_count = js_module_count = asset_bundle_count = 0
+        xml_id_count = js_module_count = asset_bundle_count = signature_adapter_count = 0
         for offset, version in enumerate(range(source, target)):
             next_version = version + 1
             report(
@@ -353,6 +355,7 @@ class BrainTrainer:
             xml_ids = xml_id_renames(old, new)
             js_modules = js_module_renames(old, new)
             asset_bundles = asset_bundle_renames(old, new)
+            signatures = signature_adapters(old, new, diff)
             rule_metadata = [
                 {
                     "rule_id": rule.rule_id,
@@ -376,6 +379,7 @@ class BrainTrainer:
                 "xml_id_renames": xml_ids,
                 "js_module_renames": js_modules,
                 "asset_bundle_renames": asset_bundles,
+                "signature_adapters": signatures,
                 "automatic_rules": [item["rule_id"] for item in rule_metadata],
                 "transformations": rule_metadata,
                 "compatibility": step_knowledge(old, new, diff),
@@ -387,6 +391,7 @@ class BrainTrainer:
             xml_id_count += len(xml_ids)
             js_module_count += len(js_modules)
             asset_bundle_count += len(asset_bundles)
+            signature_adapter_count += len(signatures)
 
         training = {
             "dataset": dataset.as_dict(),
@@ -432,4 +437,5 @@ class BrainTrainer:
             xml_id_count,
             js_module_count,
             asset_bundle_count,
+            signature_adapter_count,
         )
