@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 import subprocess
 
@@ -95,9 +96,9 @@ def test_enterprise_source_prevents_false_dependency_and_model_blockers_and_repl
     result = MigrationService().migrate(custom, output, analysis)
     assert output.is_dir()
     assert (output / "custom_reports" / "__manifest__.py").is_file()
-    metadata = result.metadata_path.read_text(encoding="utf-8")
-    assert str(enterprise18.resolve()) in metadata
-    assert str(enterprise19.resolve()) in metadata
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["enterprise_sources"]["18"] == str(enterprise18.resolve())
+    assert metadata["enterprise_sources"]["19"] == str(enterprise19.resolve())
 
 
 
