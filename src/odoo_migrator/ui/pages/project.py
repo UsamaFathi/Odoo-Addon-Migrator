@@ -54,6 +54,9 @@ class ProjectPage(QWidget):
     forgetSourceRequested = Signal(int)
     enterpriseSourceRequested = Signal(int)
     enterpriseForgetRequested = Signal(int)
+    brainBuildRequested = Signal()
+    brainSelectRequested = Signal()
+    brainForgetRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,6 +81,17 @@ class ProjectPage(QWidget):
         self.model = AddonsModel(self); self.modules = QTableView(); self.modules.setModel(self.model); self.modules.setSortingEnabled(True); self.modules.setAlternatingRowColors(True)
         self.modules.setSelectionBehavior(QTableView.SelectRows); self.modules.verticalHeader().setDefaultSectionSize(36); self.modules.horizontalHeader().setStretchLastSection(True)
         self.module_search = QLineEdit(); self.module_search.setPlaceholderText("Filter detected addons…"); self.module_search.textChanged.connect(self._filter_modules)
+        self.brain_status = StatusBadge("Migration Brain not configured", "badgeInfo")
+        self.brain_path = QLabel("Train once from Odoo source, then migrate custom addons without source indexing.")
+        self.brain_path.setObjectName("muted"); self.brain_path.setWordWrap(True)
+        self.brain_mode = QCheckBox("Use Migration Brain runtime (no Odoo source indexing)")
+        self.brain_mode.setEnabled(False); self.brain_mode.toggled.connect(self._brain_mode_changed)
+        self.brain_build_button = QPushButton("Build Migration Brain")
+        self.brain_build_button.setObjectName("secondary"); self.brain_build_button.clicked.connect(self.brainBuildRequested)
+        self.brain_select_button = QPushButton("Use existing .omb")
+        self.brain_select_button.setObjectName("secondary"); self.brain_select_button.clicked.connect(self.brainSelectRequested)
+        self.brain_forget_button = QPushButton("Forget Brain")
+        self.brain_forget_button.setObjectName("secondary"); self.brain_forget_button.clicked.connect(self.brainForgetRequested); self.brain_forget_button.hide()
         self.autonomous_mode = QCheckBox("Continue automatically when blockers are resolved"); self.autonomous_mode.setChecked(True)
         self.autonomous_mode.setToolTip("When enabled, a clean autonomous analysis continues directly into migration.")
         self.analyze_button = QPushButton("Analyze & auto-resolve  →"); self.analyze_button.clicked.connect(self.analyzeRequested); self.analyze_button.setEnabled(False)
@@ -109,6 +123,11 @@ class ProjectPage(QWidget):
             card = MetricCard(label); self.metrics.append(card); metric_row.addWidget(card)
         main.addLayout(metric_row, 0)
         main.addWidget(self.sources, 0)
+        brain_card = SurfaceCard(); brain_layout = QVBoxLayout(brain_card); brain_layout.setContentsMargins(18, 14, 18, 14); brain_layout.setSpacing(8)
+        brain_title = QLabel("Migration Brain"); brain_title.setObjectName("sectionTitle"); brain_layout.addWidget(brain_title)
+        brain_layout.addWidget(self.brain_status); brain_layout.addWidget(self.brain_path); brain_layout.addWidget(self.brain_mode)
+        brain_actions = QHBoxLayout(); brain_actions.addWidget(self.brain_build_button); brain_actions.addWidget(self.brain_select_button); brain_actions.addWidget(self.brain_forget_button); brain_actions.addStretch(); brain_layout.addLayout(brain_actions)
+        main.addWidget(brain_card, 0)
         table_header = QHBoxLayout(); title = QLabel("Detected addons"); title.setObjectName("sectionTitle"); table_header.addWidget(title); table_header.addStretch(); table_header.addWidget(self.module_search); main.addLayout(table_header, 0)
         main.addWidget(self.modules, 1)
         action_bar = QHBoxLayout(); action_bar.addWidget(self.autonomous_mode); action_bar.addStretch(); action_bar.addWidget(self.analyze_button); main.addLayout(action_bar, 0)
@@ -145,6 +164,38 @@ class ProjectPage(QWidget):
     def autonomous_enabled(self) -> bool:
         return self.autonomous_mode.isChecked()
 
+    def brain_enabled(self) -> bool:
+        return self.brain_mode.isChecked() and self.brain_mode.isEnabled()
+
+    def set_brain(self, path: Path | None, *, source: int | None = None,
+                  target: int | None = None, fingerprint: str | None = None) -> None:
+        if path is None:
+            self.brain_status.setText("Migration Brain not configured")
+            self.brain_status.set_role("badgeInfo")
+            self.brain_path.setText("Train once from Odoo source, then migrate custom addons without source indexing.")
+            self.brain_mode.setChecked(False); self.brain_mode.setEnabled(False)
+            self.brain_forget_button.hide()
+            self._brain_mode_changed(False)
+            return
+        self.brain_status.setText("Migration Brain ready")
+        self.brain_status.set_role("badgeSuccess")
+        range_text = f"Odoo {source} → {target}" if source is not None and target is not None else "Ready"
+        fp = f"\nFingerprint: {fingerprint[:12]}…" if fingerprint else ""
+        self.brain_path.setText(f"{range_text}\n{path}{fp}")
+        self.brain_path.setToolTip(str(path))
+        self.brain_mode.setEnabled(True)
+        self.brain_forget_button.show()
+
+    def set_brain_busy(self, busy: bool) -> None:
+        self.brain_build_button.setEnabled(not busy)
+        self.brain_select_button.setEnabled(not busy)
+        self.brain_forget_button.setEnabled(not busy)
+        self.brain_mode.setEnabled(not busy and bool(self.brain_path.toolTip()))
+
+    def _brain_mode_changed(self, enabled: bool) -> None:
+        self.analyze_button.setText("Migrate with Brain  →" if enabled else "Analyze & auto-resolve  →")
+        self.autonomous_mode.setVisible(not enabled)
+
     def set_scan(self, scan) -> None:
         stats = scan.file_statistics; values = (scan.module_count, stats["python"], stats["xml"], stats["javascript"], stats["csv"])
         for card, value in zip(self.metrics, values): card.set_value(value, "addons" if card is self.metrics[0] else "files")
@@ -165,7 +216,12 @@ class ProjectPage(QWidget):
     def set_busy(self, busy: bool) -> None:
         self.analyze_button.setEnabled(not busy and bool(self.selected_target()) and self.state_ready())
         self.path_picker.setEnabled(not busy)
-        self.autonomous_mode.setEnabled(not busy)
+        self.autonomous_mode.setEnabled(not busy and not self.brain_enabled())
+        self.brain_build_button.setEnabled(not busy)
+        self.brain_select_button.setEnabled(not busy)
+        self.brain_forget_button.setEnabled(not busy)
+        if self.brain_path.toolTip():
+            self.brain_mode.setEnabled(not busy)
 
     def state_ready(self) -> bool:
         return self.path_picker.path().is_dir()
