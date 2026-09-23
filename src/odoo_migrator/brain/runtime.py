@@ -181,6 +181,7 @@ class BrainRuntimeMigrator:
             if progress:
                 progress(stage, percent)
 
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(mkdtemp(prefix=f".{output_path.name}.brain-", dir=output_path.parent))
         shutil.rmtree(staging)
         shutil.copytree(input_path, staging, symlinks=False)
