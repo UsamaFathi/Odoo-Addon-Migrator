@@ -10,6 +10,7 @@ import ast
 import difflib
 import html
 import io
+import re
 import tokenize
 from tempfile import mkdtemp
 from collections.abc import Callable
@@ -222,6 +223,229 @@ def _apply_field_mappings(root: Path, mappings: list[dict], step: str,
                 step,
             )
 
+
+
+def _rewrite_xml_reference_text(text: str, mappings: list[dict]) -> tuple[str, list[str]]:
+    updated = text
+    descriptions: list[str] = []
+    for item in mappings:
+        old = str(item["from"])
+        new = str(item["to"])
+        escaped = re.escape(old)
+        changed = False
+
+        attribute = re.compile(
+            rf"(?P<prefix>\b(?:ref|inherit_id|t-inherit|t-call|parent|binding_model_id)\s*=\s*)"
+            rf"(?P<quote>['\"]){escaped}(?P=quote)"
+        )
+        candidate, count = attribute.subn(
+            lambda match: f"{match.group('prefix')}{match.group('quote')}{new}{match.group('quote')}",
+            updated,
+        )
+        updated = candidate
+        changed = changed or bool(count)
+
+        ref_call = re.compile(
+            rf"(?P<prefix>\bref\(\s*)(?P<quote>['\"]){escaped}(?P=quote)(?P<suffix>\s*\))"
+        )
+        candidate, count = ref_call.subn(
+            lambda match: (
+                f"{match.group('prefix')}{match.group('quote')}{new}"
+                f"{match.group('quote')}{match.group('suffix')}"
+            ),
+            updated,
+        )
+        updated = candidate
+        changed = changed or bool(count)
+
+        if changed:
+            descriptions.append(f"{old} -> {new}")
+    return updated, descriptions
+
+
+def _apply_xml_id_mappings(root: Path, mappings: list[dict], step: str,
+                           changes: list[Change]) -> None:
+    if not mappings:
+        return
+    for path in sorted(root.rglob("*.xml")):
+        try:
+            current = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        updated, descriptions = _rewrite_xml_reference_text(current, mappings)
+        if updated == current:
+            continue
+        try:
+            import xml.etree.ElementTree as ET
+            ET.fromstring(updated)
+        except Exception:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        _append_change(
+            changes,
+            f"brain.xml_id_rename.{step}",
+            path,
+            "XML references: " + ", ".join(descriptions),
+            step,
+        )
+
+    model_mappings = {
+        str(item["from"]): str(item["to"])
+        for item in mappings
+        if item.get("kind") == "model_xml_id"
+    }
+    if not model_mappings:
+        return
+    for path in sorted(root.rglob("ir.model.access.csv")):
+        try:
+            raw = path.read_text(encoding="utf-8")
+            rows = list(csv.reader(io.StringIO(raw)))
+        except (OSError, UnicodeError, csv.Error):
+            continue
+        if not rows:
+            continue
+        try:
+            column = rows[0].index("model_id:id")
+        except ValueError:
+            continue
+        changed = False
+        for row in rows[1:]:
+            if column >= len(row):
+                continue
+            replacement = model_mappings.get(row[column].strip())
+            if replacement:
+                row[column] = replacement
+                changed = True
+        if not changed:
+            continue
+        newline = "\r\n" if "\r\n" in raw else "\n"
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer, lineterminator=newline)
+        writer.writerows(rows)
+        path.write_text(buffer.getvalue(), encoding="utf-8")
+        _append_change(
+            changes,
+            f"brain.security_model_xml_id_rename.{step}",
+            path,
+            "Updated exact model external IDs from trained Brain mappings.",
+            step,
+        )
+
+
+def _rewrite_js_imports(text: str, old: str, new: str) -> tuple[str, int]:
+    escaped = re.escape(old)
+    total = 0
+    patterns = (
+        re.compile(rf"(?P<prefix>\bfrom\s*)(?P<quote>['\"]){escaped}(?P=quote)"),
+        re.compile(rf"(?P<prefix>\brequire\(\s*)(?P<quote>['\"]){escaped}(?P=quote)(?P<suffix>\s*\))"),
+        re.compile(rf"(?P<prefix>\bimport\(\s*)(?P<quote>['\"]){escaped}(?P=quote)(?P<suffix>\s*\))"),
+    )
+    updated = text
+    for pattern in patterns:
+        def replacement(match):
+            suffix = match.groupdict().get("suffix") or ""
+            return (
+                f"{match.group('prefix')}{match.group('quote')}{new}"
+                f"{match.group('quote')}{suffix}"
+            )
+        updated, count = pattern.subn(replacement, updated)
+        total += count
+    return updated, total
+
+
+def _apply_js_module_mappings(root: Path, mappings: list[dict], step: str,
+                              changes: list[Change]) -> None:
+    for path in sorted(root.rglob("*.js")):
+        try:
+            current = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        updated = current
+        descriptions = []
+        for item in mappings:
+            updated, count = _rewrite_js_imports(
+                updated,
+                str(item["from"]),
+                str(item["to"]),
+            )
+            if count:
+                descriptions.append(f"{item['from']} -> {item['to']}")
+        if updated == current:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        _append_change(
+            changes,
+            f"brain.js_module_rename.{step}",
+            path,
+            "JavaScript module references: " + ", ".join(descriptions),
+            step,
+        )
+
+
+def _rewrite_manifest_asset_keys(path: Path, mappings: list[dict]) -> tuple[str | None, list[str]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+        tree = ast.parse(text, filename=str(path))
+    except (OSError, UnicodeError, SyntaxError):
+        return None, []
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Expr) or not isinstance(tree.body[0].value, ast.Dict):
+        return None, []
+
+    manifest = tree.body[0].value
+    assets = None
+    for key, value in zip(manifest.keys, manifest.values):
+        if isinstance(key, ast.Constant) and key.value == "assets" and isinstance(value, ast.Dict):
+            assets = value
+            break
+    if assets is None:
+        return None, []
+
+    mapping = {str(item["from"]): str(item["to"]) for item in mappings}
+    replacements = []
+    descriptions = []
+    lines = text.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    for key in assets.keys:
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+            continue
+        replacement = mapping.get(key.value)
+        if not replacement:
+            continue
+        start = offsets[key.lineno - 1] + key.col_offset
+        end = offsets[key.end_lineno - 1] + key.end_col_offset
+        replacements.append((start, end, repr(replacement)))
+        descriptions.append(f"{key.value} -> {replacement}")
+    if not replacements:
+        return None, []
+
+    updated = text
+    for start, end, replacement in reversed(replacements):
+        updated = updated[:start] + replacement + updated[end:]
+    try:
+        value = ast.literal_eval(updated)
+        if not isinstance(value, dict):
+            return None, []
+    except (SyntaxError, ValueError):
+        return None, []
+    return updated, descriptions
+
+
+def _apply_asset_bundle_mappings(root: Path, mappings: list[dict], step: str,
+                                 changes: list[Change]) -> None:
+    for path in sorted(root.rglob("__manifest__.py")):
+        updated, descriptions = _rewrite_manifest_asset_keys(path, mappings)
+        if updated is None:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        _append_change(
+            changes,
+            f"brain.asset_bundle_rename.{step}",
+            path,
+            "Asset bundles: " + ", ".join(descriptions),
+            step,
+        )
 
 def _xml_reference_matches(reference: str, removed: set[str]) -> bool:
     value = reference.strip()
@@ -548,6 +772,9 @@ class BrainRuntimeMigrator:
                     _apply_field_mappings(staging, list(learned.get("field_renames", ())), key, changes)
                     _cleanup_shadow_files(staging)
                     _apply_method_mappings(staging, list(learned.get("method_renames", ())), key, changes)
+                    _apply_xml_id_mappings(staging, list(learned.get("xml_id_renames", ())), key, changes)
+                    _apply_js_module_mappings(staging, list(learned.get("js_module_renames", ())), key, changes)
+                    _apply_asset_bundle_mappings(staging, list(learned.get("asset_bundle_renames", ())), key, changes)
 
                 findings.extend(_brain_findings(staging, key, learned.get("compatibility", {})))
 
