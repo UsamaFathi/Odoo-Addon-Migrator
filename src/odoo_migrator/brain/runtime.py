@@ -180,7 +180,7 @@ def _rewrite_field_file(path: Path, model: str, old: str, new: str) -> str | Non
         following = significant[index + 1].string if index + 1 < len(significant) else ""
         before_previous = significant[index - 2].string if index >= 2 else ""
         is_declaration = following == "=" and index + 2 < len(significant) and significant[index + 2].string == "fields"
-        is_attribute = previous == "." and before_previous not in {"", "def", "class"}
+        is_attribute = previous == "." and before_previous == "self"
         if is_declaration or is_attribute:
             replacements.append((*token.start, *token.end))
     if not replacements:
