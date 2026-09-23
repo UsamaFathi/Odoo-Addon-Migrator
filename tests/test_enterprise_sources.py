@@ -151,3 +151,25 @@ def test_enterprise_git_branches_are_archived_without_checkout(tmp_path: Path):
         resolved.source_root / "web_enterprise" / "__manifest__.py"
     ).read_text(encoding="utf-8")
     assert head_after == head_before
+
+
+
+def test_direct_enterprise_folder_does_not_treat_module_versions_as_odoo_versions(tmp_path: Path):
+    root = tmp_path / "enterprise16"
+    for name, module_version in (
+        ("web_enterprise", "1.0"),
+        ("account_reports", "2.0"),
+        ("documents", "4.0"),
+    ):
+        module = root / name
+        module.mkdir(parents=True, exist_ok=True)
+        (module / "__manifest__.py").write_text(
+            repr({"name": name, "version": module_version, "depends": []}),
+            encoding="utf-8",
+        )
+
+    resolved = resolve_enterprise_source(root, 16, cache_root=tmp_path / "cache")
+
+    assert resolved.mode == "direct_folder"
+    assert resolved.version == 16
+    assert resolved.source_root == root.resolve()
