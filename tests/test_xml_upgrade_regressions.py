@@ -105,3 +105,18 @@ def test_xpath_tree_text_inside_string_literal_is_not_changed(tmp_path: Path):
 
     assert changes == []
     assert path.read_text(encoding="utf-8") == original
+
+
+
+def test_xpath_tree_path_inside_string_literal_is_not_changed(tmp_path: Path):
+    root = tmp_path / "addons"
+    module = root / "demo"
+    module.mkdir(parents=True)
+    path = module / "view.xml"
+    original = """<odoo><xpath expr="//field[@domain='//tree']" position="attributes"/></odoo>"""
+    path.write_text(original, encoding="utf-8")
+
+    changes = XPathTreeToListRule().apply(root, dry_run=False)
+
+    assert changes == []
+    assert path.read_text(encoding="utf-8") == original
