@@ -225,6 +225,133 @@ def _apply_field_mappings(root: Path, mappings: list[dict], step: str,
 
 
 
+
+def _rewrite_signature_adapter(path: Path, adapter: dict) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+        tree = ast.parse(text, filename=str(path))
+    except (OSError, UnicodeError, SyntaxError):
+        return None
+
+    model = str(adapter["model"])
+    method = str(adapter["method"])
+    source_signature = str(adapter["source_signature"])
+    target_signature = str(adapter["target_signature"])
+    rename_map = {
+        str(item["from"]): str(item["to"])
+        for item in adapter.get("parameter_renames", ())
+    }
+    if not rename_map:
+        return None
+
+    target_node = None
+    for class_node in tree.body:
+        if not isinstance(class_node, ast.ClassDef):
+            continue
+        if model not in MethodRenameResolver._class_models(class_node):
+            continue
+        for child in class_node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == method:
+                target_node = child
+                break
+        if target_node is not None:
+            break
+    if target_node is None or ast.unparse(target_node.args) != source_signature:
+        return None
+
+    unsafe_scopes = (
+        ast.Lambda,
+        ast.ClassDef,
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+    for child in ast.walk(target_node):
+        if child is target_node:
+            continue
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, *unsafe_scopes)):
+            return None
+
+    wanted_positions: dict[tuple[int, int], str] = {}
+    for arg in [
+        *target_node.args.posonlyargs,
+        *target_node.args.args,
+        *target_node.args.kwonlyargs,
+    ]:
+        if arg.arg in rename_map:
+            wanted_positions[(arg.lineno, arg.col_offset)] = rename_map[arg.arg]
+    for arg in (target_node.args.vararg, target_node.args.kwarg):
+        if arg is not None and arg.arg in rename_map:
+            wanted_positions[(arg.lineno, arg.col_offset)] = rename_map[arg.arg]
+
+    for child in ast.walk(target_node):
+        if isinstance(child, ast.Name) and child.id in rename_map:
+            wanted_positions[(child.lineno, child.col_offset)] = rename_map[child.id]
+
+    if not wanted_positions:
+        return None
+
+    tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    replacements: list[tuple[int, int, int, int, str]] = []
+    for token in tokens:
+        replacement = wanted_positions.get(token.start)
+        if replacement and token.type == tokenize.NAME:
+            replacements.append((*token.start, *token.end, replacement))
+    if not replacements:
+        return None
+
+    lines = text.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+
+    updated = text
+    for start_line, start_col, end_line, end_col, replacement in reversed(replacements):
+        start = offsets[start_line - 1] + start_col
+        end = offsets[end_line - 1] + end_col
+        updated = updated[:start] + replacement + updated[end:]
+
+    try:
+        updated_tree = ast.parse(updated, filename=str(path))
+    except SyntaxError:
+        return None
+    for class_node in updated_tree.body:
+        if not isinstance(class_node, ast.ClassDef):
+            continue
+        if model not in MethodRenameResolver._class_models(class_node):
+            continue
+        for child in class_node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == method:
+                return updated if ast.unparse(child.args) == target_signature else None
+    return None
+
+
+def _apply_signature_adapters(root: Path, adapters: list[dict], step: str,
+                              changes: list[Change]) -> None:
+    for adapter in adapters:
+        for path in sorted(root.rglob("*.py")):
+            if path.name == "__manifest__.py" or "__pycache__" in path.parts:
+                continue
+            updated = _rewrite_signature_adapter(path, adapter)
+            if updated is None:
+                continue
+            path.write_text(updated, encoding="utf-8")
+            renames = ", ".join(
+                f"{item['from']} -> {item['to']}"
+                for item in adapter.get("parameter_renames", ())
+            )
+            _append_change(
+                changes,
+                f"brain.signature_adapter.{step}",
+                path,
+                (
+                    f"Adapted {adapter['model']}.{adapter['method']} parameter names "
+                    f"to target signature ({renames})."
+                ),
+                step,
+            )
+
 def _rewrite_xml_reference_text(text: str, mappings: list[dict]) -> tuple[str, list[str]]:
     updated = text
     descriptions: list[str] = []
@@ -549,7 +676,17 @@ def _brain_findings(root: Path, step: str, compatibility: dict) -> tuple[Finding
                     object_name=f"{model_name}.{field}", source_state="present", target_state="removed",
                     suggested_action="Review the trained target field API.",
                 ))
+            signature_details = {
+                item.get("method"): item
+                for item in change.get("signature_details", ())
+                if isinstance(item, dict)
+            }
             for method in sorted(set(model.methods) & set(change.get("signature_changes", ()) )):
+                detail = signature_details.get(method, {})
+                target_signature = detail.get("target")
+                current_signature = model.signatures.get(method)
+                if target_signature and current_signature == target_signature:
+                    continue
                 location = model.method_locations.get(method)
                 findings.append(Finding(
                     Severity.REVIEW_REQUIRED, "brain.signature.changed", module_name,
@@ -557,7 +694,9 @@ def _brain_findings(root: Path, step: str, compatibility: dict) -> tuple[Finding
                     path=location[0] if location else model.source_path,
                     line=location[1] if location else model.line,
                     rule_id=f"brain.signature.changed.{step}", migration_step=step,
-                    object_name=f"{model_name}.{method}", source_state="changed", target_state="changed",
+                    object_name=f"{model_name}.{method}",
+                    source_state=str(detail.get("source") or "changed"),
+                    target_state=str(target_signature or "changed"),
                     suggested_action="Review callers and overridden method signatures.",
                 ))
         for dependency in sorted(set(module.js_dependencies) & removed_js):
@@ -772,6 +911,7 @@ class BrainRuntimeMigrator:
                     _apply_field_mappings(staging, list(learned.get("field_renames", ())), key, changes)
                     _cleanup_shadow_files(staging)
                     _apply_method_mappings(staging, list(learned.get("method_renames", ())), key, changes)
+                    _apply_signature_adapters(staging, list(learned.get("signature_adapters", ())), key, changes)
                     _apply_xml_id_mappings(staging, list(learned.get("xml_id_renames", ())), key, changes)
                     _apply_js_module_mappings(staging, list(learned.get("js_module_renames", ())), key, changes)
                     _apply_asset_bundle_mappings(staging, list(learned.get("asset_bundle_renames", ())), key, changes)
