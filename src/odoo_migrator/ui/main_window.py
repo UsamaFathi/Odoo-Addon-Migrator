@@ -194,12 +194,22 @@ class MainWindow(QMainWindow):
 
     def _build_brain(self) -> None:
         default_output = Path.home() / ".odoo-addon-migrator" / "brain" / "migration_brain.omb"
-        roots = {Path(value).resolve() for value in self.enterprise_sources.values()}
-        enterprise_root = next(iter(roots)) if len(roots) == 1 else None
-        if enterprise_root is None:
+        required_versions = tuple(self.registry.versions())
+        configured_enterprise = {
+            version: Path(path).resolve()
+            for version, path in self.enterprise_sources.items()
+            if version in required_versions
+        }
+        has_complete_per_version_sources = all(
+            version in configured_enterprise for version in required_versions
+        )
+
+        enterprise_root = None
+        enterprise_roots = configured_enterprise if has_complete_per_version_sources else None
+        if enterprise_roots is None:
             selected = QFileDialog.getExistingDirectory(
                 self,
-                "Select Enterprise repository (Cancel for Community-only Brain)",
+                "Select Enterprise repository/root for Odoo 14–19 (Cancel for Community-only Brain)",
             )
             enterprise_root = Path(selected).resolve() if selected else None
 
@@ -213,6 +223,7 @@ class MainWindow(QMainWindow):
                 source=min(self.registry.versions()),
                 target=max(self.registry.versions()),
                 enterprise_root=enterprise_root,
+                enterprise_roots=enterprise_roots,
                 history_repo=enterprise_root if enterprise_root and (enterprise_root / ".git").exists() else None,
                 progress=progress,
             ),
