@@ -53,28 +53,43 @@ folders/branches (`enterprise_root`) or a per-version mapping
 version, commit/ref, source mode, and whether Enterprise knowledge was
 included.
 
-The pack schema is versioned and fingerprinted.  Its archive contains only
-`brain.json`; unexpected archive members and unsupported schema versions are
-rejected.  The schema contains:
+The pack schema is versioned and fingerprinted. Schema v3 is allow-listed:
+unknown top-level, step, mapping, transformation, or compatibility keys are
+rejected before a pack can be written. Its archive contains only `brain.json`;
+unexpected archive members and unsupported schema versions are rejected. The
+schema contains:
 
 - deterministic adjacent-step rule IDs and evidence;
 - module/model/field/method/XML/JS/asset compatibility summaries;
 - high-confidence dependency/model/field/method mappings;
+- exact derived XML/QWeb ID, JavaScript module, and asset-bundle rename mappings;
+- safe parameter-name-only signature adapters where shape/defaults/annotations
+  are unchanged;
 - learned ranker coefficients;
-- grouped train/validation metrics including precision, recall, F1, and false
-  positive rate.
+- grouped train/validation metrics plus calibrated production decision metrics
+  (precision, recall, coverage, false-auto-fix rate, threshold, and margin).
 
-The dataset split is grouped by migration step, model, and source API.  This
+The dataset split is grouped by migration step, model, and source API. This
 keeps a source API and its hard negatives together and avoids reporting a
 misleading validation result caused by equivalent examples appearing in both
-training and holdout sets.
+training and holdout sets. The trainer calibrates the actual automatic-decision
+gate on grouped holdout decisions and prefers zero false auto-fixes when the
+holdout evidence supports it.
+
+Training supervision is layered: stable APIs, exact semantic rename pairs,
+optional Git-history rename hints from a full local repository, and lower-weight
+conservative weak rename evidence. Git history is optional; normal training
+still works when only pinned source snapshots are available.
 
 ## Automatic-change policy
 
-ML is a candidate ranker, not a code generator.  A method mapping requires a
-high probability and a minimum margin over the second candidate.  Mappings
-are applied through token/AST-aware transformations; arbitrary text and
-business logic are never rewritten from a prediction.
+ML is a candidate ranker, not a code generator. A method mapping requires the
+calibrated high probability and minimum margin over the second candidate.
+Mappings are applied through token/AST-aware transformations; arbitrary text
+and business logic are never rewritten from a prediction. Learned field
+rewrites are restricted to field declarations and proven `self.field` access.
+Signature auto-fixes are limited to parameter-name-only changes whose source
+signature matches exactly; arity/default/annotation changes remain review-only.
 
 Deterministic rules include the verified adjacent-pack transformations, such
 as manifest prefixes, `attrs`/`states`, Tree/List architecture and action
@@ -104,6 +119,7 @@ are named `14.0` through `19.0`:
 ```powershell
 python -m odoo_migrator brain build --from 14 --to 19 `
   --enterprise D:\Sources\odoo-enterprise `
+  --history-repo D:\Sources\odoo-full-history `
   --output .\migration_brain.omb
 ```
 
