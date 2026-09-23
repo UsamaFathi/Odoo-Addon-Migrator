@@ -662,3 +662,23 @@ def test_git_history_miner_finds_single_method_rename_hunk(tmp_path: Path):
         item.source_method == "old_method" and item.target_method == "new_method"
         for item in pairs
     )
+
+
+
+def test_brain_trainer_rejects_one_direct_enterprise_tree_for_multiple_versions(tmp_path: Path):
+    community18 = tmp_path / "community18"
+    community19 = tmp_path / "community19"
+    enterprise = tmp_path / "enterprise"
+    _addon(community18, "demo_core", 18, model="demo.model")
+    _addon(community19, "demo_core", 19, model="demo.model")
+    _addon(enterprise, "web_enterprise", 18, model="web.enterprise")
+
+    trainer = BrainTrainer(source_manager=_Manager({18: community18, 19: community19}))
+
+    with pytest.raises(ValueError, match="single direct addons tree"):
+        trainer.build(
+            tmp_path / "brain.omb",
+            source=18,
+            target=19,
+            enterprise_root=enterprise,
+        )
