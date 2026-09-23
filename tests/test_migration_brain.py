@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ from odoo_migrator.brain.pack import BrainPack, new_brain_payload
 from odoo_migrator.brain.ranker import LogisticRanker, RankedExample
 from odoo_migrator.brain.runtime import BrainRuntimeMigrator
 from odoo_migrator.brain.trainer import BrainTrainer
+from odoo_migrator.brain.history import mine_git_method_renames
 from odoo_migrator.sources.registry import SourceSnapshot
 from odoo_migrator.sources.indexer import SourceIndexer
 
@@ -320,8 +323,8 @@ class Sale(models.Model):
     _inherit = 'sale.order'
     legacy_field = fields.Char()
 
-    def check(self):
-        return self.legacy_field
+    def check(self, other):
+        return self.legacy_field, other.legacy_field
 """
     (module / "models.py").write_text(source, encoding="utf-8")
     brain = BrainPack(new_brain_payload(
@@ -347,6 +350,8 @@ class Sale(models.Model):
 
     assert "modern_field = fields.Char()" in migrated
     assert "self.modern_field" in migrated
+    assert "other.legacy_field" in migrated
+    assert "other.modern_field" not in migrated
     assert "legacy_field" in source
     assert "legacy_field = fields.Char()" in (custom / "custom_sale" / "models.py").read_text(encoding="utf-8")
 
@@ -466,3 +471,194 @@ def test_brain_does_not_guess_cross_model_method_moves(tmp_path: Path):
     migrated = (tmp_path / "migrated" / "custom_models" / "models.py").read_text(encoding="utf-8")
     assert migrated == source.read_text(encoding="utf-8")
     assert any(item.code == "brain.method.moved" for item in result.findings)
+
+
+
+def test_brain_pack_schema_v3_rejects_unknown_knowledge_keys(tmp_path: Path):
+    payload = new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={
+            "18_to_19": {
+                "source": 18,
+                "target": 19,
+                "automatic_rules": [],
+                "unexpected_raw_payload": "not allowed",
+            }
+        },
+        training={"validation": {}},
+        source_identities={},
+    )
+    with pytest.raises(ValueError, match="unsupported keys"):
+        BrainPack(payload).save(tmp_path / "bad-schema.omb")
+
+
+def test_brain_runtime_applies_parameter_name_only_signature_adapter(tmp_path: Path):
+    custom = tmp_path / "custom"
+    module = _addon(custom, "custom_demo", 18)
+    path = module / "models.py"
+    path.write_text(
+        """from odoo import models
+
+class Demo(models.Model):
+    _inherit = 'demo.model'
+
+    def action_demo(self, vals, context=None):
+        return self._do(vals, context)
+""",
+        encoding="utf-8",
+    )
+    brain = BrainPack(new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={
+            "18_to_19": {
+                "source": 18,
+                "target": 19,
+                "automatic_rules": [],
+                "signature_adapters": [{
+                    "model": "demo.model",
+                    "method": "action_demo",
+                    "source_signature": "self, vals, context=None",
+                    "target_signature": "self, values, context=None",
+                    "parameter_renames": [{"from": "vals", "to": "values"}],
+                    "confidence": 1.0,
+                    "evidence": "parameter_names_only_same_shape_defaults_annotations",
+                }],
+                "compatibility": {
+                    "model_changes": [{
+                        "model": "demo.model",
+                        "removed_fields": [],
+                        "removed_methods": [],
+                        "signature_changes": ["action_demo"],
+                        "signature_details": [{
+                            "method": "action_demo",
+                            "source": "self, vals, context=None",
+                            "target": "self, values, context=None",
+                        }],
+                    }],
+                },
+            }
+        },
+        training={"validation": {}},
+        source_identities={},
+    ))
+
+    result = BrainRuntimeMigrator(brain).migrate(
+        custom, tmp_path / "migrated", source=18, target=19
+    )
+    migrated = (tmp_path / "migrated" / "custom_demo" / "models.py").read_text(encoding="utf-8")
+
+    assert "def action_demo(self, values, context=None):" in migrated
+    assert "self._do(values, context)" in migrated
+    assert not any(item.code == "brain.signature.changed" for item in result.findings)
+
+
+def test_brain_runtime_applies_exact_xml_js_and_asset_mappings(tmp_path: Path):
+    custom = tmp_path / "custom"
+    module = custom / "custom_web"
+    (module / "static" / "src").mkdir(parents=True)
+    (module / "__manifest__.py").write_text(
+        repr({
+            "name": "Custom Web",
+            "version": "18.0.1.0.0",
+            "depends": [],
+            "assets": {"old.bundle": ["custom_web/static/src/main.js"]},
+        }),
+        encoding="utf-8",
+    )
+    (module / "views.xml").write_text(
+        "<odoo><template id='x' t-inherit='old.template'>"
+        "<t t-call='old.template'/></template></odoo>",
+        encoding="utf-8",
+    )
+    (module / "static" / "src" / "main.js").write_text(
+        "import { x } from '@old/module';\n"
+        "const y = require('@old/module');\n",
+        encoding="utf-8",
+    )
+
+    brain = BrainPack(new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={
+            "18_to_19": {
+                "source": 18,
+                "target": 19,
+                "automatic_rules": [],
+                "xml_id_renames": [{
+                    "kind": "template",
+                    "from": "old.template",
+                    "to": "new.template",
+                    "confidence": 1.0,
+                    "evidence": "unique_exact_derived_signature",
+                }],
+                "js_module_renames": [{
+                    "from": "@old/module",
+                    "to": "@new/module",
+                    "confidence": 1.0,
+                    "evidence": "unique_same_static_source_location",
+                }],
+                "asset_bundle_renames": [{
+                    "from": "old.bundle",
+                    "to": "new.bundle",
+                    "confidence": 1.0,
+                    "evidence": "unique_exact_asset_declaration",
+                }],
+                "compatibility": {},
+            }
+        },
+        training={"validation": {}},
+        source_identities={},
+    ))
+
+    BrainRuntimeMigrator(brain).migrate(
+        custom, tmp_path / "migrated", source=18, target=19
+    )
+    migrated = tmp_path / "migrated" / "custom_web"
+    xml = (migrated / "views.xml").read_text(encoding="utf-8")
+    js = (migrated / "static" / "src" / "main.js").read_text(encoding="utf-8")
+    manifest = ast.literal_eval((migrated / "__manifest__.py").read_text(encoding="utf-8"))
+
+    assert "new.template" in xml and "old.template" not in xml
+    assert "@new/module" in js and "@old/module" not in js
+    assert "new.bundle" in manifest["assets"] and "old.bundle" not in manifest["assets"]
+
+
+def test_git_history_miner_finds_single_method_rename_hunk(tmp_path: Path):
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("Git unavailable")
+
+    repo_path = tmp_path / "history"
+    repo_path.mkdir()
+    subprocess.run([git, "-C", str(repo_path), "init"], check=True, capture_output=True)
+    subprocess.run([git, "-C", str(repo_path), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run([git, "-C", str(repo_path), "config", "user.name", "Test"], check=True)
+
+    path = repo_path / "model.py"
+    path.write_text(
+        "class Demo:\n    def old_method(self, vals):\n        return vals\n",
+        encoding="utf-8",
+    )
+    subprocess.run([git, "-C", str(repo_path), "add", "."], check=True)
+    subprocess.run([git, "-C", str(repo_path), "commit", "-m", "old"], check=True, capture_output=True)
+    subprocess.run([git, "-C", str(repo_path), "branch", "18.0"], check=True)
+
+    path.write_text(
+        "class Demo:\n    def new_method(self, vals):\n        return vals\n",
+        encoding="utf-8",
+    )
+    subprocess.run([git, "-C", str(repo_path), "add", "."], check=True)
+    subprocess.run([git, "-C", str(repo_path), "commit", "-m", "new"], check=True, capture_output=True)
+    subprocess.run([git, "-C", str(repo_path), "branch", "19.0"], check=True)
+
+    pairs = mine_git_method_renames(repo_path, 18, 19)
+
+    assert any(
+        item.source_method == "old_method" and item.target_method == "new_method"
+        for item in pairs
+    )
