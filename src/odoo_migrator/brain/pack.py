@@ -23,7 +23,7 @@ _TOP_LEVEL_KEYS = frozenset({
 })
 _STEP_KEYS = frozenset({
     "source", "target", "method_renames", "model_renames",
-    "dependency_renames", "field_renames", "xml_id_renames",
+    "dependency_renames", "field_renames", "signature_adapters", "xml_id_renames",
     "js_module_renames", "asset_bundle_renames", "automatic_rules",
     "transformations", "compatibility",
 })
@@ -140,6 +140,20 @@ def _validate_schema_v3(payload: Mapping[str, Any]) -> None:
             frozenset({"model", "from", "to", "confidence", "margin", "evidence"}),
             f"steps.{step_name}.field_renames",
         )
+        _validate_mapping_items(
+            step.get("signature_adapters", []),
+            frozenset({
+                "model", "method", "source_signature", "target_signature",
+                "parameter_renames", "confidence", "evidence",
+            }),
+            f"steps.{step_name}.signature_adapters",
+        )
+        for adapter_index, adapter in enumerate(step.get("signature_adapters", [])):
+            _validate_mapping_items(
+                adapter.get("parameter_renames", []),
+                frozenset({"from", "to"}),
+                f"steps.{step_name}.signature_adapters[{adapter_index}].parameter_renames",
+            )
         _validate_mapping_items(
             step.get("xml_id_renames", []),
             frozenset({"kind", "from", "to", "confidence", "evidence"}),
