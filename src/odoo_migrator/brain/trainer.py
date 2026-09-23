@@ -141,6 +141,89 @@ def _dependency_renames(source: OdooIndex, target: OdooIndex, diff: SourceDiff,
     return [item for item in values if target_use[item["to"]] == 1]
 
 
+def _grouped_decision_metrics(ranker: LogisticRanker, samples, *, threshold: float, margin: float) -> dict:
+    groups: dict[str, list] = {}
+    for sample in samples:
+        groups.setdefault(sample.group, []).append(sample)
+
+    correct = false_auto = abstained = 0
+    for rows in groups.values():
+        ranked = sorted(
+            (
+                (ranker.predict_proba(sample.features), sample)
+                for sample in rows
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        if not ranked:
+            continue
+        best_probability, best_sample = ranked[0]
+        second_probability = ranked[1][0] if len(ranked) > 1 else 0.0
+        if best_probability < threshold or best_probability - second_probability < margin:
+            abstained += 1
+            continue
+        if best_sample.label == 1:
+            correct += 1
+        else:
+            false_auto += 1
+
+    decisions = correct + false_auto
+    total = len(groups)
+    precision = correct / decisions if decisions else 0.0
+    recall = correct / total if total else 0.0
+    false_auto_rate = false_auto / decisions if decisions else 0.0
+    coverage = decisions / total if total else 0.0
+    return {
+        "groups": total,
+        "decisions": decisions,
+        "correct_auto_fixes": correct,
+        "false_auto_fixes": false_auto,
+        "abstained": abstained,
+        "precision": precision,
+        "recall": recall,
+        "false_auto_fix_rate": false_auto_rate,
+        "coverage": coverage,
+        "threshold": threshold,
+        "margin": margin,
+    }
+
+
+def _calibrate_decision_gate(ranker: LogisticRanker, samples) -> dict:
+    rows = tuple(samples)
+    if not rows:
+        return _grouped_decision_metrics(ranker, rows, threshold=0.90, margin=0.10)
+
+    candidates = []
+    for threshold in (0.80, 0.85, 0.88, 0.90, 0.92, 0.94, 0.96, 0.98):
+        for margin in (0.08, 0.10, 0.12, 0.15, 0.20):
+            metrics = _grouped_decision_metrics(
+                ranker,
+                rows,
+                threshold=threshold,
+                margin=margin,
+            )
+            if metrics["decisions"]:
+                candidates.append(metrics)
+
+    if not candidates:
+        return _grouped_decision_metrics(ranker, rows, threshold=0.98, margin=0.20)
+
+    zero_false = [item for item in candidates if item["false_auto_fixes"] == 0]
+    pool = zero_false or candidates
+    pool.sort(
+        key=lambda item: (
+            item["precision"],
+            item["recall"],
+            item["coverage"],
+            item["threshold"],
+            item["margin"],
+        ),
+        reverse=True,
+    )
+    return pool[0]
+
+
 class BrainTrainer:
     """Build a reusable migration model from official Odoo source once."""
 
@@ -228,7 +311,13 @@ class BrainTrainer:
         report("Training semantic API ranker", 62)
         ranker = LogisticRanker()
         ranker.fit(sample.ranked() for sample in dataset.train)
-        validation = ranker.evaluate(sample.ranked() for sample in dataset.validation)
+        baseline_validation = ranker.evaluate(
+            (sample.ranked() for sample in dataset.validation),
+            threshold=0.50,
+        )
+        production_gate = _calibrate_decision_gate(ranker, dataset.validation)
+        production_threshold = float(production_gate["threshold"])
+        production_margin = float(production_gate["margin"])
 
         steps: dict[str, dict] = {}
         method_count = model_count = dependency_count = field_count = 0
@@ -240,7 +329,14 @@ class BrainTrainer:
             )
             old, new = indexes[version], indexes[next_version]
             diff = compare_indexes(old, new)
-            methods = _learned_method_renames(old, new, diff, ranker)
+            methods = _learned_method_renames(
+                old,
+                new,
+                diff,
+                ranker,
+                threshold=production_threshold,
+                minimum_margin=production_margin,
+            )
             models = _model_renames(old, new, diff, version, next_version)
             dependencies = _dependency_renames(old, new, diff, version, next_version)
             fields = field_renames(old, new, diff)
@@ -275,15 +371,20 @@ class BrainTrainer:
 
         training = {
             "dataset": dataset.as_dict(),
-            "validation": validation.as_dict(),
+            "validation": baseline_validation.as_dict(),
+            "production_validation": {
+                key: round(value, 6) if isinstance(value, float) else value
+                for key, value in production_gate.items()
+            },
             "enterprise_versions": enterprise_versions,
-            "method_threshold": 0.90,
-            "method_margin": 0.10,
+            "method_threshold": production_threshold,
+            "method_margin": production_margin,
             "metrics": {
-                "precision": validation.precision,
-                "recall": validation.recall,
-                "f1": validation.f1,
-                "false_positive_rate": validation.false_positive_rate,
+                "precision": production_gate["precision"],
+                "recall": production_gate["recall"],
+                "false_auto_fix_rate": production_gate["false_auto_fix_rate"],
+                "coverage": production_gate["coverage"],
+                "baseline_f1_at_0_5": baseline_validation.f1,
             },
             "split_strategy": dataset.split_strategy,
         }
@@ -304,7 +405,7 @@ class BrainTrainer:
             loaded,
             destination,
             dataset.total,
-            validation.as_dict(),
+            training["production_validation"],
             method_count,
             model_count,
             dependency_count,
