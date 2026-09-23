@@ -121,3 +121,46 @@ class SaleOrder(models.Model):
     assert "super().action_start_review(" in result
     assert "self.action_start_review()" in result
     assert "other.action_review()" in result
+
+
+
+def test_semantic_method_matcher_rejects_two_old_methods_mapping_to_one_new_method(tmp_path: Path):
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    module = old_root / "sale"
+    module.mkdir(parents=True)
+    (module / "__manifest__.py").write_text(
+        repr({"name": "Sale", "version": "18.0.1.0.0"}),
+        encoding="utf-8",
+    )
+    (module / "models.py").write_text(
+        """from odoo import models
+
+class SaleOrder(models.Model):
+    _name = 'sale.order'
+
+    def action_review(self, vals):
+        self.ensure_one()
+        if self.state != 'draft':
+            return False
+        result = self._prepare_invoice(vals)
+        self.message_post(body='reviewed')
+        return result
+
+    def action_reopen(self, vals):
+        self.ensure_one()
+        if self.state != 'draft':
+            return False
+        result = self._prepare_invoice(vals)
+        self.message_post(body='reviewed')
+        return result
+""",
+        encoding="utf-8",
+    )
+    _addon(new_root, 19, "action_start_review")
+
+    indexer = SourceIndexer()
+    old = indexer.index(old_root, cache_dir=tmp_path / "cache-old")
+    new = indexer.index(new_root, cache_dir=tmp_path / "cache-new")
+
+    assert high_confidence_method_renames(old, new, compare_indexes(old, new)) == ()
