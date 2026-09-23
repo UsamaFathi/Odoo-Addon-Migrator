@@ -7,6 +7,7 @@ copy Odoo source text or source paths into a reusable ``.omb`` pack.
 """
 
 from difflib import SequenceMatcher
+import ast
 from typing import Any
 
 from odoo_migrator.sources.diff import SourceDiff
@@ -270,6 +271,118 @@ def asset_bundle_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str,
         })
         target_use[replacement] = target_use.get(replacement, 0) + 1
     return [item for item in values if target_use[item["to"]] == 1]
+
+
+def _parse_signature(signature: str | None) -> ast.arguments | None:
+    if not signature:
+        return None
+    try:
+        tree = ast.parse(f"def _brain_signature({signature}):\n    pass\n")
+    except SyntaxError:
+        return None
+    node = tree.body[0]
+    return node.args if isinstance(node, ast.FunctionDef) else None
+
+
+def _argument_metadata_equal(left: ast.arguments, right: ast.arguments) -> bool:
+    if (
+        len(left.posonlyargs) != len(right.posonlyargs)
+        or len(left.args) != len(right.args)
+        or len(left.kwonlyargs) != len(right.kwonlyargs)
+        or len(left.defaults) != len(right.defaults)
+        or len(left.kw_defaults) != len(right.kw_defaults)
+        or bool(left.vararg) != bool(right.vararg)
+        or bool(left.kwarg) != bool(right.kwarg)
+    ):
+        return False
+
+    def annotation(arg: ast.arg | None):
+        return ast.dump(arg.annotation, include_attributes=False) if arg and arg.annotation else None
+
+    left_args = [*left.posonlyargs, *left.args, *left.kwonlyargs]
+    right_args = [*right.posonlyargs, *right.args, *right.kwonlyargs]
+    if any(annotation(a) != annotation(b) for a, b in zip(left_args, right_args)):
+        return False
+    if annotation(left.vararg) != annotation(right.vararg):
+        return False
+    if annotation(left.kwarg) != annotation(right.kwarg):
+        return False
+
+    if [ast.dump(item, include_attributes=False) for item in left.defaults] != [
+        ast.dump(item, include_attributes=False) for item in right.defaults
+    ]:
+        return False
+
+    def dump_default(item):
+        return ast.dump(item, include_attributes=False) if item is not None else None
+
+    return [dump_default(item) for item in left.kw_defaults] == [
+        dump_default(item) for item in right.kw_defaults
+    ]
+
+
+def signature_adapters(source: OdooIndex, target: OdooIndex, diff: SourceDiff) -> list[dict[str, Any]]:
+    """Return only parameter-name-only signature changes with identical semantics."""
+    values: list[dict[str, Any]] = []
+    for change in diff.model_changes:
+        if not change.signature_changes:
+            continue
+        old_model = source.models.get(change.model)
+        new_model = target.models.get(change.model)
+        if old_model is None or new_model is None:
+            continue
+        for method in sorted(change.signature_changes):
+            old_signature = old_model.signatures.get(method)
+            new_signature = new_model.signatures.get(method)
+            old_args = _parse_signature(old_signature)
+            new_args = _parse_signature(new_signature)
+            if old_args is None or new_args is None:
+                continue
+            if not _argument_metadata_equal(old_args, new_args):
+                continue
+
+            old_params = [
+                *old_args.posonlyargs,
+                *old_args.args,
+                *old_args.kwonlyargs,
+            ]
+            new_params = [
+                *new_args.posonlyargs,
+                *new_args.args,
+                *new_args.kwonlyargs,
+            ]
+            if old_args.vararg and new_args.vararg:
+                old_params.append(old_args.vararg)
+                new_params.append(new_args.vararg)
+            if old_args.kwarg and new_args.kwarg:
+                old_params.append(old_args.kwarg)
+                new_params.append(new_args.kwarg)
+
+            renames = []
+            for old_param, new_param in zip(old_params, new_params):
+                if old_param.arg == new_param.arg:
+                    continue
+                if old_param.arg in {"self", "cls"} or new_param.arg in {"self", "cls"}:
+                    renames = []
+                    break
+                renames.append({"from": old_param.arg, "to": new_param.arg})
+            if not renames:
+                continue
+
+            old_names = {item["from"] for item in renames}
+            new_names = {item["to"] for item in renames}
+            if len(old_names) != len(renames) or len(new_names) != len(renames):
+                continue
+            values.append({
+                "model": change.model,
+                "method": method,
+                "source_signature": old_signature,
+                "target_signature": new_signature,
+                "parameter_renames": renames,
+                "confidence": 1.0,
+                "evidence": "parameter_names_only_same_shape_defaults_annotations",
+            })
+    return values
 
 def step_knowledge(source: OdooIndex, target: OdooIndex, diff: SourceDiff) -> dict[str, Any]:
     """Serialize a compact, source-free compatibility summary for one step."""
