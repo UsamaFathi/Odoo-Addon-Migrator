@@ -100,10 +100,7 @@ class DesktopSettings:
             path = Path(str(value)).expanduser().resolve()
         except (OSError, RuntimeError, ValueError):
             return None
-        try:
-            return path if path.is_dir() and any(item.name == "__manifest__.py" for item in path.rglob("__manifest__.py")) else None
-        except OSError:
-            return None
+        return path if path.is_dir() else None
 
     def save_enterprise_source(self, version: int, path: str | Path) -> None:
         resolved = Path(path).expanduser().resolve()
