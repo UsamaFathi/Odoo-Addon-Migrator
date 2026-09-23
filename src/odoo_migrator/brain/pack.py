@@ -76,6 +76,15 @@ def _validate_mapping_items(items: Any, allowed: frozenset[str], context: str) -
 
 def _validate_schema_v3(payload: Mapping[str, Any]) -> None:
     _reject_unknown_keys(payload, _TOP_LEVEL_KEYS, "brain")
+    if payload.get("brain_type") != "odoo_migration_brain":
+        raise ValueError("Migration Brain schema has an invalid brain_type.")
+    try:
+        source_version = int(payload["source_version"])
+        target_version = int(payload["target_version"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Migration Brain schema has invalid version metadata.") from exc
+    if target_version <= source_version:
+        raise ValueError("Migration Brain target version must be higher than source version.")
 
     ranker = payload.get("ranker")
     if not isinstance(ranker, Mapping):
@@ -111,6 +120,12 @@ def _validate_schema_v3(payload: Mapping[str, Any]) -> None:
         }),
         "knowledge_policy",
     )
+    if policy.get("source_code_embedded") is not False:
+        raise ValueError("Migration Brain knowledge policy must prohibit embedded source code.")
+    if policy.get("automatic_changes_require_deterministic_transform") is not True:
+        raise ValueError("Migration Brain automatic changes must require deterministic transforms.")
+    if policy.get("ambiguous_predictions_are_review_only") is not True:
+        raise ValueError("Migration Brain ambiguous predictions must remain review-only.")
 
     steps = payload.get("steps")
     if not isinstance(steps, Mapping):
@@ -119,6 +134,18 @@ def _validate_schema_v3(payload: Mapping[str, Any]) -> None:
         if not isinstance(step, Mapping):
             raise ValueError(f"Migration Brain step {step_name!r} must be an object.")
         _reject_unknown_keys(step, _STEP_KEYS, f"steps.{step_name}")
+        try:
+            step_source = int(step["source"])
+            step_target = int(step["target"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Migration Brain step {step_name!r} has invalid versions.") from exc
+        expected_name = f"{step_source}_to_{step_target}"
+        if step_name != expected_name or step_target != step_source + 1:
+            raise ValueError(
+                f"Migration Brain step {step_name!r} must describe one adjacent version step."
+            )
+        if step_source < source_version or step_target > target_version:
+            raise ValueError(f"Migration Brain step {step_name!r} is outside the pack range.")
 
         _validate_mapping_items(
             step.get("method_renames", []),
