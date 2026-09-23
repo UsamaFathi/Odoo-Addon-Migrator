@@ -116,3 +116,22 @@ Migration Brain invariants:
   fingerprints the original project. The input project is never modified.
 - A `.omb` pack contains derived knowledge and model parameters only, never
   source file contents.
+
+
+## Migration Brain hardening rules
+
+- Brain schema v3 is allow-listed. New knowledge types require an explicit
+  schema change and tests; arbitrary payload keys must never be serialized.
+- Report production decision metrics at the same calibrated threshold/margin
+  used for automatic method mappings. Baseline classifier accuracy at 0.5 is
+  diagnostic only and must not be presented as auto-fix accuracy.
+- Keep train/validation splits grouped by adjacent step + model + source API.
+  Hard negatives for one decision must stay in the same split as its positive.
+- Prefer Git-history rename evidence when a full local repository is available;
+  otherwise use exact semantic rename evidence before lower-weight weak labels.
+- Learned field rewrites may change declarations and proven `self.field`
+  access only. Do not rewrite `other.field` without model proof.
+- Signature auto-fixes are limited to parameter-name-only changes with identical
+  shape, defaults and annotations and an exact custom source-signature match.
+- Learned XML/QWeb, JavaScript, and asset mappings must be one-to-one and based
+  on exact derived evidence before runtime transforms are allowed.
