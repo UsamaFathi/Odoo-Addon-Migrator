@@ -15,7 +15,8 @@ from odoo_migrator import __version__
 from odoo_migrator.sources.registry import SourceSnapshot
 from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.sources.diff import compare_indexes
-from odoo_migrator.sources.composite import compose_indexes, validate_addons_source
+from odoo_migrator.sources.composite import compose_indexes
+from odoo_migrator.sources.enterprise import validate_enterprise_tree
 from odoo_migrator.validation import ValidationItem, validate_project
 
 from odoo_migrator.core.planner import MigrationPlan, build_plan
@@ -104,7 +105,7 @@ class MigrationEngine:
             )
             enterprise_path = (enterprise_sources or {}).get(version)
             if enterprise_path:
-                enterprise_root = validate_addons_source(enterprise_path)
+                enterprise_root = validate_enterprise_tree(enterprise_path)
                 enterprise_index = indexer.index(
                     enterprise_root,
                     cache_dir=Path.home() / ".odoo-addon-migrator" / "enterprise-indexes",
@@ -159,7 +160,7 @@ class MigrationEngine:
                 "target_snapshot": target_snapshot.as_dict() if target_snapshot else None,
                 "source_snapshots": [snapshot.as_dict() for snapshot in snapshot_tuple],
                 "enterprise_sources": {
-                    str(version): str(validate_addons_source(path))
+                    str(version): str(validate_enterprise_tree(path))
                     for version, path in sorted((enterprise_sources or {}).items())
                 },
                 "validation": {"state": "not_run", "level": 0},
