@@ -184,12 +184,14 @@ class ProjectPage(QWidget):
         range_text = f"Odoo {source} → {target}" if source is not None and target is not None else "Ready"
         fp = f"\nFingerprint: {fingerprint[:12]}…" if fingerprint else ""
         self.brain_path.setText(f"{range_text}\n{path}{fp}")
-        metrics = (training or {}).get("metrics", {}) or (training or {}).get("validation", {})
+        metrics = (training or {}).get("production_validation", {}) or (training or {}).get("metrics", {})
         metric_text = ""
         if metrics:
             metric_text = (
-                f"\nValidation precision {float(metrics.get('precision', 0.0)):.3f}"
-                f"  •  F1 {float(metrics.get('f1', 0.0)):.3f}"
+                f"\nProduction precision {float(metrics.get('precision', 0.0)):.3f}"
+                f"  •  Recall {float(metrics.get('recall', 0.0)):.3f}"
+                f"  •  Coverage {float(metrics.get('coverage', 0.0)):.3f}"
+                f"  •  False auto-fix {float(metrics.get('false_auto_fix_rate', 0.0)):.3f}"
             )
         enterprise = (training or {}).get("enterprise_versions", [])
         enterprise_text = "Enterprise knowledge included" if enterprise else "Community knowledge only"
