@@ -275,6 +275,7 @@ class BrainTrainer:
         enterprise_versions: list[int] = []
         count = target - source + 1
 
+        resolved_direct_enterprise: dict[Path, list[int]] = {}
         for offset, version in enumerate(range(source, target + 1)):
             report(f"Preparing Community Odoo {version}", 5 + int(offset / count * 25))
             snapshot = self.source_manager.ensure(version)
@@ -297,6 +298,20 @@ class BrainTrainer:
             if selected_enterprise is not None:
                 report(f"Preparing Enterprise Odoo {version}", 20 + int(offset / count * 25))
                 resolution = resolve_enterprise_source(selected_enterprise, version)
+                if resolution.mode == "direct_folder":
+                    resolved_direct_enterprise.setdefault(
+                        resolution.source_root.resolve(), []
+                    ).append(version)
+                    reused_versions = resolved_direct_enterprise[resolution.source_root.resolve()]
+                    if len(reused_versions) > 1:
+                        joined = ", ".join(str(item) for item in reused_versions)
+                        raise ValueError(
+                            "The selected Enterprise folder is a single direct addons tree "
+                            f"and cannot safely represent multiple Odoo versions ({joined}). "
+                            "For a multi-version Brain build, select a repository root with "
+                            "version folders/branches, or configure a separate Enterprise "
+                            "folder for each Odoo version."
+                        )
                 enterprise = self.indexer.index(
                     resolution.source_root,
                     source_commit=resolution.commit,
