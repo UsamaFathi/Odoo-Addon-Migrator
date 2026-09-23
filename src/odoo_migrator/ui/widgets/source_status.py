@@ -25,7 +25,7 @@ class SourceVersionCard(SurfaceCard):
         self.commit = QLabel(""); self.commit.setObjectName("muted"); self.commit.setWordWrap(True); layout.addWidget(self.commit)
         self.actions = QHBoxLayout(); self.local = QPushButton("Use local source"); self.local.setObjectName("secondary"); self.local.clicked.connect(lambda: self.localRequested.emit(self.version)); self.download = QPushButton("Use verified snapshot"); self.download.setObjectName("secondary"); self.download.clicked.connect(lambda: self.downloadRequested.emit(self.version)); self.change = QPushButton("Change folder"); self.change.setObjectName("secondary"); self.change.clicked.connect(lambda: self.localRequested.emit(self.version)); self.forget = QPushButton("Forget"); self.forget.setObjectName("secondary"); self.forget.clicked.connect(lambda: self.forgetRequested.emit(self.version)); self.actions.addWidget(self.local); self.actions.addWidget(self.download); self.actions.addWidget(self.change); self.actions.addWidget(self.forget); layout.addLayout(self.actions)
         self.enterprise_label = QLabel("Enterprise: not configured"); self.enterprise_label.setObjectName("muted"); self.enterprise_label.setWordWrap(True); layout.addWidget(self.enterprise_label)
-        enterprise_actions = QHBoxLayout(); self.enterprise = QPushButton("Add Enterprise"); self.enterprise.setObjectName("secondary"); self.enterprise.clicked.connect(lambda: self.enterpriseRequested.emit(self.version)); self.enterprise_forget = QPushButton("Remove Enterprise"); self.enterprise_forget.setObjectName("secondary"); self.enterprise_forget.clicked.connect(lambda: self.enterpriseForgetRequested.emit(self.version)); enterprise_actions.addWidget(self.enterprise); enterprise_actions.addWidget(self.enterprise_forget); layout.addLayout(enterprise_actions)
+        enterprise_actions = QHBoxLayout(); self.enterprise = QPushButton("Add Enterprise repo"); self.enterprise.setObjectName("secondary"); self.enterprise.clicked.connect(lambda: self.enterpriseRequested.emit(self.version)); self.enterprise_forget = QPushButton("Remove Enterprise"); self.enterprise_forget.setObjectName("secondary"); self.enterprise_forget.clicked.connect(lambda: self.enterpriseForgetRequested.emit(self.version)); enterprise_actions.addWidget(self.enterprise); enterprise_actions.addWidget(self.enterprise_forget); layout.addLayout(enterprise_actions)
 
     def set_snapshot(self, snapshot, selection: SourceSelection | None = None, enterprise_path: Path | None = None) -> None:
         expected = source_spec(self.version).verified_commit or "unknown"
@@ -45,11 +45,11 @@ class SourceVersionCard(SurfaceCard):
         if enterprise_path:
             self.enterprise_label.setText(f"Enterprise: {enterprise_path}")
             self.enterprise_label.setToolTip(str(enterprise_path))
-            self.enterprise.setText("Change Enterprise")
+            self.enterprise.setText("Change Enterprise repo")
             self.enterprise_forget.setVisible(True)
         else:
-            self.enterprise_label.setText("Enterprise: optional / not configured")
-            self.enterprise.setText("Add Enterprise")
+            self.enterprise_label.setText("Enterprise: optional • repo or version folder")
+            self.enterprise.setText("Add Enterprise repo")
             self.enterprise_forget.setVisible(False)
 
 
