@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QFrame, QH
 
 from odoo_migrator import __version__
 from odoo_migrator.application.services import AnalysisService, MigrationService, ProjectScanService
+from odoo_migrator.brain import BrainPack, BrainRuntimeMigrator, BrainTrainer
 from odoo_migrator.migrations.registry import default_registry
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.sources.registry import SourceMode, SourceSelection
@@ -74,6 +75,8 @@ class MainWindow(QMainWindow):
         if getattr(self.analysis_service, "source_manager", None) is None: self.analysis_service.source_manager = self.source_manager
         self.source_selections: dict[int, SourceSelection] = {}
         self.enterprise_sources: dict[int, Path] = {}
+        self.brain_path: Path | None = None
+        self.brain_pack: BrainPack | None = None
         self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._task_success_callback = None; self._task_busy_callback = None; self._auto_migrate_pending = False; self._log_dir = configure_logging()
         if settings is None:
             self.settings = DesktopSettings()
@@ -101,6 +104,7 @@ class MainWindow(QMainWindow):
         self.project_page.path_picker.pathChanged.connect(self._path_changed); self.project_page.sourceChanged.connect(self._source_changed); self.project_page.targetChanged.connect(self._target_changed); self.project_page.analyzeRequested.connect(self._analyze); self.project_page.outputChanged.connect(self._output_changed)
         self.analysis_page.backRequested.connect(lambda: self._show_page(0, 0)); self.analysis_page.migrateRequested.connect(self._migrate); self.results_page.openOutputRequested.connect(self._open_output); self.results_page.openReportRequested.connect(self._open_report); self.results_page.openDiffRequested.connect(self._open_diff); self.results_page.newProjectRequested.connect(self._new_project); self.analysis_page.details.openLocation.connect(self._open_finding_location)
         self.project_page.localSourceRequested.connect(self._choose_local_source); self.project_page.downloadSourceRequested.connect(self._choose_verified_source); self.project_page.forgetSourceRequested.connect(self._forget_source); self.project_page.enterpriseSourceRequested.connect(self._choose_enterprise_source); self.project_page.enterpriseForgetRequested.connect(self._forget_enterprise_source)
+        self.project_page.brainBuildRequested.connect(self._build_brain); self.project_page.brainSelectRequested.connect(self._select_brain); self.project_page.brainForgetRequested.connect(self._forget_brain)
 
     def _restore_settings(self) -> None:
         geometry = self.settings.load_geometry()
@@ -117,6 +121,12 @@ class MainWindow(QMainWindow):
                 try: self.source_manager.resolve_selection(selection)
                 except SourceManagerError: self.settings.forget_source_selection(version); continue
             self.source_selections[version] = selection
+        brain_path = self.settings.load_brain_path()
+        if brain_path:
+            try:
+                self._activate_brain(brain_path)
+            except ValueError:
+                self.settings.forget_brain_path()
 
     def closeEvent(self, event) -> None:
         if self._thread and self._thread.isRunning(): self._thread.quit(); self._thread.wait(5000)
@@ -148,6 +158,134 @@ class MainWindow(QMainWindow):
         except TypeError:
             # Preserve compatibility with small test/dry-run service adapters.
             return self.analysis_service.source_status(source, target)
+
+    def _activate_brain(self, path: Path) -> None:
+        pack = BrainPack.load(path)
+        self.brain_path = Path(path).resolve()
+        self.brain_pack = pack
+        self.settings.save_brain_path(self.brain_path)
+        self.project_page.set_brain(
+            self.brain_path,
+            source=pack.source,
+            target=pack.target,
+            fingerprint=pack.fingerprint,
+        )
+
+    def _select_brain(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Migration Brain",
+            str(Path.home()),
+            "Migration Brain (*.omb)",
+        )
+        if not selected:
+            return
+        try:
+            self._activate_brain(Path(selected))
+        except ValueError as exc:
+            self._show_error("Invalid Migration Brain pack.", str(exc))
+
+    def _forget_brain(self) -> None:
+        self.brain_path = None
+        self.brain_pack = None
+        self.settings.forget_brain_path()
+        self.project_page.set_brain(None)
+
+    def _build_brain(self) -> None:
+        default_output = Path.home() / ".odoo-addon-migrator" / "brain" / "migration_brain.omb"
+        roots = {Path(value).resolve() for value in self.enterprise_sources.values()}
+        enterprise_root = next(iter(roots)) if len(roots) == 1 else None
+        if enterprise_root is None:
+            selected = QFileDialog.getExistingDirectory(
+                self,
+                "Select Enterprise repository (Cancel for Community-only Brain)",
+            )
+            enterprise_root = Path(selected).resolve() if selected else None
+
+        trainer = BrainTrainer(source_manager=self.source_manager, registry=self.registry)
+        self.project_page.brain_status.setText("Building Migration Brain…")
+        self.project_page.brain_status.set_role("badgeInfo")
+        self._start_task(
+            "brain-training",
+            lambda progress=None: trainer.build(
+                default_output,
+                source=min(self.registry.versions()),
+                target=max(self.registry.versions()),
+                enterprise_root=enterprise_root,
+                progress=progress,
+            ),
+            (),
+            self._brain_build_done,
+            self.project_page.set_brain_busy,
+        )
+
+    def _brain_build_done(self, token: int, result) -> None:
+        if token != self.state.operation_token:
+            return
+        self._activate_brain(result.output)
+        metrics = result.validation_metrics
+        self._log(
+            "Migration Brain trained",
+            output=result.output,
+            samples=result.training_samples,
+            accuracy=metrics.get("accuracy", "n/a"),
+            method_renames=result.method_renames,
+        )
+        QMessageBox.information(
+            self,
+            "Migration Brain ready",
+            (
+                f"Brain pack created successfully.\n\n"
+                f"{result.output}\n\n"
+                f"Training samples: {result.training_samples}\n"
+                f"Validation accuracy: {metrics.get('accuracy', 0):.3f}\n"
+                f"Learned method renames: {result.method_renames}"
+            ),
+        )
+
+    def _brain_migrate(self, root: Path, source: int, target: int) -> None:
+        if self.brain_pack is None or self.brain_path is None:
+            self._show_error("Select or build a Migration Brain first.")
+            return
+        if not self.brain_pack.supports(source, target):
+            self._show_error(
+                f"The selected Migration Brain does not support Odoo {source} → {target}."
+            )
+            return
+        output = self.project_page.selected_output()
+        if output.exists():
+            self._show_error("The selected output directory already exists. Choose a different destination.")
+            return
+        runtime = BrainRuntimeMigrator(self.brain_pack, registry=self.registry)
+        self.state.set_output_root(output)
+        self._show_page(2, 3)
+        self.migration_page.set_destination(output)
+        self._start_task(
+            "brain-migration",
+            lambda progress=None: runtime.migrate(
+                root,
+                output,
+                source=source,
+                target=target,
+                progress=progress,
+            ),
+            (),
+            self._brain_migration_done,
+            self.migration_page.set_busy,
+        )
+
+    def _brain_migration_done(self, token: int, result) -> None:
+        if token != self.state.operation_token:
+            return
+        self.state.set_migration(result)
+        self.results_page.set_result(result, None)
+        self._show_page(3, 4)
+        self._log(
+            "Brain migration completed",
+            output=result.output,
+            changes=len(result.changes),
+            brain=self.brain_pack.fingerprint[:12] if self.brain_pack else "unknown",
+        )
 
     def _choose_local_source(self, version: int) -> None:
         selected = QFileDialog.getExistingDirectory(self, f"Select Odoo {version} source folder")
@@ -233,6 +371,9 @@ class MainWindow(QMainWindow):
         if not root or not self.state.scan: self._show_error("Choose a valid addons folder first."); return
         if target is None: self._show_error("No implemented migration target is available from this source version."); return
         self.state.set_versions(source, target)
+        if self.project_page.brain_enabled():
+            self._brain_migrate(root, source, target)
+            return
         try: snapshots = self._source_status(source, target)
         except SourceManagerError as exc: self._show_error("Unable to inspect the local Odoo source cache.", str(exc)); return
         invalid_local = [version for version, snapshot in snapshots.items() if snapshot is None and self.source_selections.get(version, SourceSelection(version)).mode is SourceMode.LOCAL_EXACT_SOURCE]
