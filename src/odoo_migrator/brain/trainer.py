@@ -17,7 +17,13 @@ from odoo_migrator.sources.indexer import OdooIndex, SourceIndexer
 from odoo_migrator.sources.manager import SourceManager
 
 from .dataset import build_method_dataset
-from .knowledge import field_renames, step_knowledge
+from .knowledge import (
+    asset_bundle_renames,
+    field_renames,
+    js_module_renames,
+    step_knowledge,
+    xml_id_renames,
+)
 from .pack import BrainPack, new_brain_payload
 from .ranker import LogisticRanker, RankedExample
 
@@ -32,6 +38,9 @@ class BrainTrainingResult:
     model_renames: int
     dependency_renames: int
     field_renames: int = 0
+    xml_id_renames: int = 0
+    js_module_renames: int = 0
+    asset_bundle_renames: int = 0
 
 
 def _learned_method_renames(
@@ -321,6 +330,7 @@ class BrainTrainer:
 
         steps: dict[str, dict] = {}
         method_count = model_count = dependency_count = field_count = 0
+        xml_id_count = js_module_count = asset_bundle_count = 0
         for offset, version in enumerate(range(source, target)):
             next_version = version + 1
             report(
@@ -340,6 +350,9 @@ class BrainTrainer:
             models = _model_renames(old, new, diff, version, next_version)
             dependencies = _dependency_renames(old, new, diff, version, next_version)
             fields = field_renames(old, new, diff)
+            xml_ids = xml_id_renames(old, new)
+            js_modules = js_module_renames(old, new)
+            asset_bundles = asset_bundle_renames(old, new)
             rule_metadata = [
                 {
                     "rule_id": rule.rule_id,
@@ -360,6 +373,9 @@ class BrainTrainer:
                 "model_renames": models,
                 "dependency_renames": dependencies,
                 "field_renames": fields,
+                "xml_id_renames": xml_ids,
+                "js_module_renames": js_modules,
+                "asset_bundle_renames": asset_bundles,
                 "automatic_rules": [item["rule_id"] for item in rule_metadata],
                 "transformations": rule_metadata,
                 "compatibility": step_knowledge(old, new, diff),
@@ -368,6 +384,9 @@ class BrainTrainer:
             model_count += len(models)
             dependency_count += len(dependencies)
             field_count += len(fields)
+            xml_id_count += len(xml_ids)
+            js_module_count += len(js_modules)
+            asset_bundle_count += len(asset_bundles)
 
         training = {
             "dataset": dataset.as_dict(),
@@ -410,4 +429,7 @@ class BrainTrainer:
             model_count,
             dependency_count,
             field_count,
+            xml_id_count,
+            js_module_count,
+            asset_bundle_count,
         )
