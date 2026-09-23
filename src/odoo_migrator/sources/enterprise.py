@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import ast
 import os
 import shutil
 import subprocess
@@ -41,31 +40,6 @@ def validate_enterprise_tree(path: str | Path) -> Path:
     if not _has_manifests(root):
         raise EnterpriseSourceError(f"No Odoo addon manifests were found in Enterprise source: {root}")
     return root
-
-
-def _manifest_major_versions(root: Path, limit: int = 250) -> set[int]:
-    versions: set[int] = set()
-    count = 0
-    try:
-        for manifest in root.rglob("__manifest__.py"):
-            if count >= limit:
-                break
-            count += 1
-            try:
-                value = ast.literal_eval(manifest.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, SyntaxError, ValueError):
-                continue
-            if not isinstance(value, dict):
-                continue
-            raw = value.get("version")
-            if not isinstance(raw, str):
-                continue
-            head = raw.split(".", 1)[0]
-            if head.isdigit():
-                versions.add(int(head))
-    except OSError:
-        return set()
-    return versions
 
 
 def _capture(args: list[str]) -> str | None:
@@ -169,12 +143,13 @@ def resolve_enterprise_source(
         return EnterpriseSourceResolution(version, root, tree, "git_branch", ref, commit)
 
     if _has_manifests(root):
-        detected = _manifest_major_versions(root)
-        if not detected or detected == {version}:
-            return EnterpriseSourceResolution(version, root, root, "direct_folder")
-        raise EnterpriseSourceError(
-            f"Enterprise folder appears to contain Odoo version(s) {sorted(detected)}, not Odoo {version}."
-        )
+        # Odoo addon manifest "version" is module metadata, not a reliable
+        # indicator of the Odoo major release. Enterprise addons commonly use
+        # values such as "1.0", "2.0", or "4.0" on every supported Odoo
+        # series. A direct user-selected addons tree is therefore accepted
+        # based on its addon structure; versioned repo roots and Git branches
+        # are resolved above when that stronger evidence exists.
+        return EnterpriseSourceResolution(version, root, root, "direct_folder")
 
     raise EnterpriseSourceError(
         f"Could not resolve Odoo {version} Enterprise source from {root}. "
