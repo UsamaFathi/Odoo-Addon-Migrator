@@ -17,6 +17,7 @@ from odoo_migrator.sources.indexer import OdooIndex, SourceIndexer
 from odoo_migrator.sources.manager import SourceManager
 
 from .dataset import build_method_dataset
+from .history import mine_git_method_renames
 from .knowledge import (
     asset_bundle_renames,
     field_renames,
@@ -257,6 +258,7 @@ class BrainTrainer:
         target: int = 19,
         enterprise_root: str | Path | None = None,
         enterprise_roots: Mapping[int, str | Path] | None = None,
+        history_repo: str | Path | None = None,
         progress: Callable[[str, int], None] | None = None,
     ) -> BrainTrainingResult:
         if target <= source:
@@ -313,7 +315,27 @@ class BrainTrainer:
             indexes[version] = community
 
         report("Building supervised semantic dataset", 50)
-        dataset = build_method_dataset(indexes, source, target)
+        history_root = Path(history_repo).expanduser().resolve() if history_repo else None
+        if history_root is None and enterprise_root is not None:
+            candidate = Path(enterprise_root).expanduser().resolve()
+            if (candidate / ".git").exists():
+                history_root = candidate
+
+        history_pairs: dict[str, set[tuple[str, str]]] = {}
+        history_label_count = 0
+        if history_root is not None and (history_root / ".git").exists():
+            for version in range(source, target):
+                items = mine_git_method_renames(history_root, version, version + 1)
+                pairs = {(item.source_method, item.target_method) for item in items}
+                history_pairs[f"{version}_to_{version + 1}"] = pairs
+                history_label_count += len(pairs)
+
+        dataset = build_method_dataset(
+            indexes,
+            source,
+            target,
+            history_pairs=history_pairs,
+        )
         if dataset.positives == 0 or dataset.negatives == 0:
             raise ValueError(
                 "Not enough semantic training examples were discovered in the selected Odoo sources."
@@ -411,6 +433,14 @@ class BrainTrainer:
                 "baseline_f1_at_0_5": baseline_validation.f1,
             },
             "split_strategy": dataset.split_strategy,
+            "history_supervision": {
+                "enabled": bool(history_pairs),
+                "rename_pairs": history_label_count,
+                "steps": {
+                    step: len(pairs)
+                    for step, pairs in sorted(history_pairs.items())
+                },
+            },
         }
         payload = new_brain_payload(
             source=source,
