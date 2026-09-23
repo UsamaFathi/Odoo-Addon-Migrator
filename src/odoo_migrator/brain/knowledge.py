@@ -129,15 +129,167 @@ def _model_ownership_changes(source: OdooIndex, target: OdooIndex) -> list[dict[
     ]
 
 
+
+def _flatten_views(index: OdooIndex, attribute: str) -> dict[str, Any]:
+    return {
+        key: value
+        for module in index.modules.values()
+        for key, value in getattr(module, attribute).items()
+    }
+
+
+def _unique_exact_identifier_mappings(
+    old: dict[str, Any],
+    new: dict[str, Any],
+    *,
+    signature,
+    kind: str,
+) -> list[dict[str, Any]]:
+    removed = sorted(old.keys() - new.keys())
+    added = sorted(new.keys() - old.keys())
+    targets: dict[Any, list[str]] = {}
+    for identifier in added:
+        targets.setdefault(signature(new[identifier]), []).append(identifier)
+
+    values: list[dict[str, Any]] = []
+    target_use: dict[str, int] = {}
+    for identifier in removed:
+        candidates = targets.get(signature(old[identifier]), [])
+        if len(candidates) != 1:
+            continue
+        replacement = candidates[0]
+        values.append({
+            "kind": kind,
+            "from": identifier,
+            "to": replacement,
+            "confidence": 1.0,
+            "evidence": "unique_exact_derived_signature",
+        })
+        target_use[replacement] = target_use.get(replacement, 0) + 1
+    return [item for item in values if target_use[item["to"]] == 1]
+
+
+def xml_id_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+
+    for attribute, kind in (("views", "view"), ("templates", "template")):
+        old = _flatten_views(source, attribute)
+        new = _flatten_views(target, attribute)
+        values.extend(_unique_exact_identifier_mappings(
+            old,
+            new,
+            signature=lambda item: (
+                item.inherit_id or "",
+                tuple(item.xpaths),
+                item.architecture,
+            ),
+            kind=kind,
+        ))
+
+    old_model_ids = source.model_xml_ids
+    new_model_ids = target.model_xml_ids
+    values.extend(_unique_exact_identifier_mappings(
+        old_model_ids,
+        new_model_ids,
+        signature=lambda model: model,
+        kind="model_xml_id",
+    ))
+    return values
+
+
+def js_module_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str, Any]]:
+    old_locations = {
+        name: location
+        for module in source.modules.values()
+        for name, location in module.js_module_locations.items()
+    }
+    new_locations = {
+        name: location
+        for module in target.modules.values()
+        for name, location in module.js_module_locations.items()
+    }
+    removed = sorted(set(old_locations) - set(new_locations))
+    added = sorted(set(new_locations) - set(old_locations))
+    by_location: dict[str, list[str]] = {}
+    for name in added:
+        by_location.setdefault(new_locations[name], []).append(name)
+
+    values = []
+    target_use: dict[str, int] = {}
+    for name in removed:
+        candidates = by_location.get(old_locations[name], [])
+        if len(candidates) != 1:
+            continue
+        replacement = candidates[0]
+        values.append({
+            "from": name,
+            "to": replacement,
+            "confidence": 1.0,
+            "evidence": "unique_same_static_source_location",
+        })
+        target_use[replacement] = target_use.get(replacement, 0) + 1
+    return [item for item in values if target_use[item["to"]] == 1]
+
+
+def _asset_bundle_signatures(index: OdooIndex) -> dict[str, tuple]:
+    signatures: dict[str, tuple] = {}
+    for module in index.modules.values():
+        assets = module.manifest.get("assets", {})
+        if not isinstance(assets, dict):
+            continue
+        for bundle, entries in assets.items():
+            if isinstance(entries, (list, tuple)):
+                signature = tuple(str(item) for item in entries)
+            else:
+                signature = (str(entries),)
+            signatures[str(bundle)] = signature
+    return signatures
+
+
+def asset_bundle_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str, Any]]:
+    old = _asset_bundle_signatures(source)
+    new = _asset_bundle_signatures(target)
+    removed = sorted(set(old) - set(new))
+    added = sorted(set(new) - set(old))
+    targets: dict[tuple, list[str]] = {}
+    for name in added:
+        targets.setdefault(new[name], []).append(name)
+
+    values = []
+    target_use: dict[str, int] = {}
+    for name in removed:
+        candidates = targets.get(old[name], [])
+        if len(candidates) != 1:
+            continue
+        replacement = candidates[0]
+        values.append({
+            "from": name,
+            "to": replacement,
+            "confidence": 1.0,
+            "evidence": "unique_exact_asset_declaration",
+        })
+        target_use[replacement] = target_use.get(replacement, 0) + 1
+    return [item for item in values if target_use[item["to"]] == 1]
+
 def step_knowledge(source: OdooIndex, target: OdooIndex, diff: SourceDiff) -> dict[str, Any]:
     """Serialize a compact, source-free compatibility summary for one step."""
     model_changes = []
     for change in diff.model_changes:
+        source_model = source.models.get(change.model)
+        target_model = target.models.get(change.model)
+        signature_details = []
+        for method in sorted(change.signature_changes):
+            signature_details.append({
+                "method": method,
+                "source": source_model.signatures.get(method) if source_model else None,
+                "target": target_model.signatures.get(method) if target_model else None,
+            })
         model_changes.append({
             "model": change.model,
             "removed_fields": sorted(change.removed_fields),
             "removed_methods": sorted(change.removed_methods),
             "signature_changes": sorted(change.signature_changes),
+            "signature_details": signature_details,
         })
     return {
         "removed_modules": sorted(diff.modules_removed),
