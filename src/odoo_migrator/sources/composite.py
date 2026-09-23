@@ -29,6 +29,7 @@ def _merge_model(left: ModelInfo, right: ModelInfo) -> ModelInfo:
     result.method_locations.update(right.method_locations)
     result.field_locations.update(right.field_locations)
     result.method_features.update(right.method_features)
+    result.field_features.update(right.field_features)
     if not result.source_path and right.source_path:
         result.source_path, result.line = right.source_path, right.line
     return result
@@ -51,11 +52,14 @@ def _merge_module(left: ModuleInfo, right: ModuleInfo) -> ModuleInfo:
         result.controllers[key] = list(dict.fromkeys([*result.controllers[key], *values]))
     result.assets.update(right.assets)
     result.views.update(deepcopy(right.views))
+    result.templates.update(deepcopy(right.templates))
     result.model_xml_ids.update(right.model_xml_ids)
+    result.group_xml_ids.update(right.group_xml_ids)
     result.defined_models.update(right.defined_models)
     result.js_modules.update(right.js_modules)
     result.js_dependencies.update(right.js_dependencies)
     result.js_module_locations.update(right.js_module_locations)
+    result.source_layer = "+".join(dict.fromkeys((left.source_layer, right.source_layer)))
     return result
 
 

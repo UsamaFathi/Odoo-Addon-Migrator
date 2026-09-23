@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from odoo_migrator.migrations.autonomous import (
     DependencyModuleRenameResolver,
@@ -17,6 +17,7 @@ from odoo_migrator.sources.indexer import OdooIndex, SourceIndexer
 from odoo_migrator.sources.manager import SourceManager
 
 from .dataset import build_method_dataset
+from .knowledge import field_renames, step_knowledge
 from .pack import BrainPack, new_brain_payload
 from .ranker import LogisticRanker, RankedExample
 
@@ -30,6 +31,7 @@ class BrainTrainingResult:
     method_renames: int
     model_renames: int
     dependency_renames: int
+    field_renames: int = 0
 
 
 def _learned_method_renames(
@@ -160,6 +162,7 @@ class BrainTrainer:
         source: int = 14,
         target: int = 19,
         enterprise_root: str | Path | None = None,
+        enterprise_roots: Mapping[int, str | Path] | None = None,
         progress: Callable[[str, int], None] | None = None,
     ) -> BrainTrainingResult:
         if target <= source:
@@ -186,14 +189,18 @@ class BrainTrainer:
                 source_version=version,
             )
             identities[str(version)] = {
+                "version": version,
                 "community_commit": snapshot.actual_commit,
                 "community_mode": snapshot.source_mode.value,
+                "community_branch": snapshot.branch,
+                "community_origin": snapshot.origin,
                 "enterprise": False,
             }
 
-            if enterprise_root is not None:
+            selected_enterprise = (enterprise_roots or {}).get(version, enterprise_root)
+            if selected_enterprise is not None:
                 report(f"Preparing Enterprise Odoo {version}", 20 + int(offset / count * 25))
-                resolution = resolve_enterprise_source(enterprise_root, version)
+                resolution = resolve_enterprise_source(selected_enterprise, version)
                 enterprise = self.indexer.index(
                     resolution.source_root,
                     source_commit=resolution.commit,
@@ -207,6 +214,7 @@ class BrainTrainer:
                     "enterprise_mode": resolution.mode,
                     "enterprise_ref": resolution.ref,
                     "enterprise_commit": resolution.commit,
+                    "enterprise_source_layer": "enterprise",
                 })
             indexes[version] = community
 
@@ -223,7 +231,7 @@ class BrainTrainer:
         validation = ranker.evaluate(sample.ranked() for sample in dataset.validation)
 
         steps: dict[str, dict] = {}
-        method_count = model_count = dependency_count = 0
+        method_count = model_count = dependency_count = field_count = 0
         for offset, version in enumerate(range(source, target)):
             next_version = version + 1
             report(
@@ -235,8 +243,16 @@ class BrainTrainer:
             methods = _learned_method_renames(old, new, diff, ranker)
             models = _model_renames(old, new, diff, version, next_version)
             dependencies = _dependency_renames(old, new, diff, version, next_version)
-            rules = [
-                rule.rule_id
+            fields = field_renames(old, new, diff)
+            rule_metadata = [
+                {
+                    "rule_id": rule.rule_id,
+                    "category": rule.category,
+                    "classification": rule.classification.value,
+                    "automatic": rule.automatic,
+                    "description": rule.description,
+                    "evidence": rule.evidence,
+                }
                 for rule in self.registry.require(version, next_version).rule_factory()
                 if rule.automatic
             ]
@@ -247,11 +263,15 @@ class BrainTrainer:
                 "method_renames": methods,
                 "model_renames": models,
                 "dependency_renames": dependencies,
-                "automatic_rules": rules,
+                "field_renames": fields,
+                "automatic_rules": [item["rule_id"] for item in rule_metadata],
+                "transformations": rule_metadata,
+                "compatibility": step_knowledge(old, new, diff),
             }
             method_count += len(methods)
             model_count += len(models)
             dependency_count += len(dependencies)
+            field_count += len(fields)
 
         training = {
             "dataset": dataset.as_dict(),
@@ -259,6 +279,13 @@ class BrainTrainer:
             "enterprise_versions": enterprise_versions,
             "method_threshold": 0.90,
             "method_margin": 0.10,
+            "metrics": {
+                "precision": validation.precision,
+                "recall": validation.recall,
+                "f1": validation.f1,
+                "false_positive_rate": validation.false_positive_rate,
+            },
+            "split_strategy": dataset.split_strategy,
         }
         payload = new_brain_payload(
             source=source,
@@ -281,4 +308,5 @@ class BrainTrainer:
             method_count,
             model_count,
             dependency_count,
+            field_count,
         )

@@ -35,6 +35,11 @@ class MethodTrainingSample:
     def ranked(self) -> RankedExample:
         return RankedExample(self.features, self.label, self.weight)
 
+    @property
+    def group(self) -> str:
+        """Leakage-resistant split unit for one source API decision."""
+        return f"{self.step}|{self.model}|{self.source_method}"
+
 
 @dataclass(frozen=True, slots=True)
 class Dataset:
@@ -42,6 +47,7 @@ class Dataset:
     validation: tuple[MethodTrainingSample, ...]
     positives: int
     negatives: int
+    split_strategy: str = "grouped_source_api_sha256"
 
     @property
     def total(self) -> int:
@@ -54,11 +60,12 @@ class Dataset:
             "validation": len(self.validation),
             "positives": self.positives,
             "negatives": self.negatives,
+            "split_strategy": self.split_strategy,
         }
 
 
-def _holdout(sample: MethodTrainingSample) -> bool:
-    digest = hashlib.sha256(sample.key.encode("utf-8")).digest()
+def _holdout_group(group: str) -> bool:
+    digest = hashlib.sha256(group.encode("utf-8")).digest()
     return digest[0] % 5 == 0
 
 
@@ -184,8 +191,8 @@ def build_method_dataset(indexes: Mapping[int, OdooIndex], source: int, target: 
         unique.setdefault(sample.key, sample)
     rows = tuple(unique.values())
 
-    train = tuple(sample for sample in rows if not _holdout(sample))
-    validation = tuple(sample for sample in rows if _holdout(sample))
+    train = tuple(sample for sample in rows if not _holdout_group(sample.group))
+    validation = tuple(sample for sample in rows if _holdout_group(sample.group))
     positives = sum(sample.label == 1 for sample in rows)
     negatives = sum(sample.label == 0 for sample in rows)
 

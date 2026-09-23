@@ -86,3 +86,33 @@ Do not add a rule solely from memory. Verify it against official Odoo source/his
 
 ## Commands
 Use the existing project metadata and scripts as the starting point. Keep Windows local usage simple, and keep the core engine independent from the UI so CLI, desktop, and future CI integrations share one implementation.
+
+Local verification commands:
+
+```powershell
+python -m pytest -q
+python -m odoo_migrator plan --from 16 --to 18
+python -m odoo_migrator brain info .\migration_brain.omb
+python -m odoo_migrator brain migrate ADDONS OUTPUT --brain .\migration_brain.omb --from 16 --to 18
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1
+```
+
+The Windows build scripts and smoke tests must be run locally before release
+work. Do not trigger GitHub Actions from a development task unless the user
+explicitly requests it.
+
+Migration Brain invariants:
+
+- Training may read exact Community snapshots and an authorized local
+  Enterprise checkout, but Enterprise source is never embedded in a brain pack
+  or redistributed.
+- Runtime Brain migration must not acquire, index, or require Odoo source;
+  `source_code_indexed_at_runtime` remains false.
+- ML predictions rank candidates only. Automatic Python changes require the
+  deterministic AST/token guards and high-confidence margin checks; ambiguous
+  changes stay in the report for review.
+- Every Brain migration copies to a separate staging/output directory and
+  fingerprints the original project. The input project is never modified.
+- A `.omb` pack contains derived knowledge and model parameters only, never
+  source file contents.

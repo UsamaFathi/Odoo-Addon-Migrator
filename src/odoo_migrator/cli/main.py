@@ -107,6 +107,7 @@ def brain_build(
     console.print(f"Method renames learned: {result.method_renames}")
     console.print(f"Model renames learned: {result.model_renames}")
     console.print(f"Dependency renames learned: {result.dependency_renames}")
+    console.print(f"Field renames learned: {result.field_renames}")
     console.print_json(json.dumps(result.validation_metrics))
 
 
@@ -119,12 +120,13 @@ def brain_info(path: Path):
         console.print(f"[red]{_terminal_text(exc)}[/red]")
         raise typer.Exit(2)
     payload = brain.payload
-    table = Table("Step", "Method renames", "Model renames", "Dependency renames")
+    table = Table("Step", "Method renames", "Model renames", "Field renames", "Dependency renames")
     for key, step in payload.get("steps", {}).items():
         table.add_row(
             key,
             str(len(step.get("method_renames", ()))),
             str(len(step.get("model_renames", ()))),
+            str(len(step.get("field_renames", ()))),
             str(len(step.get("dependency_renames", ()))),
         )
     console.print(f"[bold]Brain fingerprint:[/bold] {brain.fingerprint}")
@@ -132,6 +134,13 @@ def brain_info(path: Path):
     console.print(table)
     console.print("[bold]Validation metrics[/bold]")
     console.print_json(json.dumps(payload.get("training", {}).get("validation", {})))
+    console.print(f"Enterprise knowledge: {len(payload.get('training', {}).get('enterprise_versions', []))} version(s)")
+    for version, identity in sorted(brain.source_identities.items(), key=lambda item: int(item[0])):
+        console.print(
+            f"Odoo {version}: {identity.get('community_mode', 'unknown')} "
+            f"{identity.get('community_commit', 'unavailable')}"
+        )
+    console.print(f"Source code embedded: {brain.contains_source_code}")
 
 
 @brain_app.command("migrate")

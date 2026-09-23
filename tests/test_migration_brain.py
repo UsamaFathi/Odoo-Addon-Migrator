@@ -4,11 +4,14 @@ import ast
 import json
 from pathlib import Path
 
+import pytest
+
 from odoo_migrator.brain.pack import BrainPack, new_brain_payload
 from odoo_migrator.brain.ranker import LogisticRanker, RankedExample
 from odoo_migrator.brain.runtime import BrainRuntimeMigrator
 from odoo_migrator.brain.trainer import BrainTrainer
 from odoo_migrator.sources.registry import SourceSnapshot
+from odoo_migrator.sources.indexer import SourceIndexer
 
 
 def _addon(root: Path, name: str, version: int, *, depends=(), model: str | None = None) -> Path:
@@ -132,6 +135,28 @@ def test_brain_trainer_builds_pack_from_source_once(tmp_path: Path):
     assert result.pack.payload["training"]["dataset"]["negatives"] > 0
 
 
+def test_brain_trainer_composes_per_version_enterprise_knowledge(tmp_path: Path):
+    community18 = tmp_path / "odoo18"
+    community19 = tmp_path / "odoo19"
+    enterprise18 = tmp_path / "enterprise18"
+    enterprise19 = tmp_path / "enterprise19"
+    _addon(community18, "demo_core", 18, model="demo.model")
+    _addon(community19, "demo_core", 19, model="demo.model")
+    _addon(enterprise18, "account_reports", 18, model="account.report")
+    _addon(enterprise19, "account_reports", 19, model="account.report")
+
+    result = BrainTrainer(source_manager=_Manager({18: community18, 19: community19})).build(
+        tmp_path / "enterprise.omb",
+        source=18,
+        target=19,
+        enterprise_roots={18: enterprise18, 19: enterprise19},
+    )
+
+    assert result.pack.training["enterprise_versions"] == [18, 19]
+    assert result.pack.source_identities["18"]["enterprise"] is True
+    assert result.pack.source_identities["19"]["enterprise"] is True
+
+
 def test_brain_runtime_migrates_without_odoo_source(tmp_path: Path):
     custom = tmp_path / "custom"
     module = _addon(
@@ -214,3 +239,230 @@ class SaleOrder(models.Model):
     metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
     assert metadata["engine"] == "migration_brain"
     assert metadata["source_code_indexed_at_runtime"] is False
+
+
+def test_brain_pack_contains_derived_knowledge_only(tmp_path: Path):
+    payload = new_brain_payload(
+        source=16,
+        target=18,
+        ranker=LogisticRanker(),
+        steps={
+            "16_to_17": {"source": 16, "target": 17, "automatic_rules": []},
+            "17_to_18": {"source": 17, "target": 18, "automatic_rules": []},
+        },
+        training={"validation": {"precision": 1.0, "false_positive_rate": 0.0}},
+        source_identities={"16": {"community_commit": "sha16"}},
+    )
+    path = BrainPack(payload).save(tmp_path / "derived.omb")
+    loaded = BrainPack.load(path)
+
+    assert loaded.contains_source_code is False
+    assert loaded.payload["knowledge_policy"]["source_code_embedded"] is False
+    assert loaded.training["validation"]["precision"] == 1.0
+
+
+def test_brain_pack_rejects_embedded_source_text(tmp_path: Path):
+    payload = new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {"source": 18, "target": 19, "automatic_rules": []}},
+        training={"validation": {}},
+        source_identities={},
+    )
+    payload["steps"]["18_to_19"]["source_code"] = "class Secret(models.Model): pass"
+
+    with pytest.raises(ValueError, match="must not contain Odoo source code"):
+        BrainPack(payload).save(tmp_path / "unsafe.omb")
+
+
+def test_brain_runtime_is_source_free_and_preserves_input(tmp_path: Path):
+    custom = tmp_path / "custom"
+    module = _addon(custom, "custom_sale", 18, depends=("removed_official",), model="sale.order")
+    (module / "models.py").write_text(
+        "from odoo import models\n\nclass Sale(models.Model):\n    _inherit = 'removed.model'\n",
+        encoding="utf-8",
+    )
+    before = SourceIndexer.project_fingerprint(custom)
+    brain = BrainPack(new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {
+            "source": 18,
+            "target": 19,
+            "automatic_rules": [],
+            "compatibility": {
+                "removed_modules": ["removed_official"],
+                "removed_models": ["removed.model"],
+                "model_changes": [],
+            },
+        }},
+        training={"validation": {}},
+        source_identities={},
+    ))
+    result = BrainRuntimeMigrator(brain).migrate(custom, tmp_path / "migrated", source=18, target=19)
+
+    assert SourceIndexer.project_fingerprint(custom) == before
+    assert result.validation_state == "blocked"
+    assert any(item.code == "brain.dependency.removed" for item in result.findings)
+    assert any(item.code == "brain.model.removed" for item in result.findings)
+    assert result.report_path and result.report_path.is_file()
+    assert result.diff_path and result.diff_path.is_file()
+
+
+def test_brain_runtime_applies_high_confidence_field_mapping_only_in_model_class(tmp_path: Path):
+    custom = tmp_path / "custom"
+    module = _addon(custom, "custom_sale", 18, model="sale.order")
+    source = """from odoo import fields, models
+
+class Sale(models.Model):
+    _inherit = 'sale.order'
+    legacy_field = fields.Char()
+
+    def check(self):
+        return self.legacy_field
+"""
+    (module / "models.py").write_text(source, encoding="utf-8")
+    brain = BrainPack(new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {
+            "source": 18,
+            "target": 19,
+            "automatic_rules": [],
+            "field_renames": [{
+                "model": "sale.order", "from": "legacy_field", "to": "modern_field",
+                "confidence": 0.99, "margin": 0.40,
+            }],
+            "compatibility": {"model_changes": []},
+        }},
+        training={"validation": {}},
+        source_identities={},
+    ))
+    output = tmp_path / "migrated"
+    BrainRuntimeMigrator(brain).migrate(custom, output, source=18, target=19)
+    migrated = (output / "custom_sale" / "models.py").read_text(encoding="utf-8")
+
+    assert "modern_field = fields.Char()" in migrated
+    assert "self.modern_field" in migrated
+    assert "legacy_field" in source
+    assert "legacy_field = fields.Char()" in (custom / "custom_sale" / "models.py").read_text(encoding="utf-8")
+
+
+def test_brain_runtime_composes_16_to_18_without_source_trees(tmp_path: Path):
+    custom = tmp_path / "custom"
+    module = _addon(custom, "custom_view", 16)
+    (module / "views.xml").write_text(
+        """<odoo><record id='view' model='ir.ui.view'><field name='arch' type='xml'>
+        <form attrs=\"{'invisible': [('state', '=', 'done')]}\"><field name='lines'><tree><field name='name'/></tree></field></form>
+        </field></record></odoo>""",
+        encoding="utf-8",
+    )
+    brain = BrainPack(new_brain_payload(
+        source=16,
+        target=18,
+        ranker=LogisticRanker(),
+        steps={
+            "16_to_17": {
+                "source": 16, "target": 17,
+                "automatic_rules": ["manifest.version.16_to_17", "xml.modifiers.attrs_states_to_inline.16_to_17"],
+                "compatibility": {},
+            },
+            "17_to_18": {
+                "source": 17, "target": 18,
+                "automatic_rules": ["manifest.version.17_to_18", "xml.view_root.tree_to_list.17_to_18", "xml.xpath.tree_to_list.17_to_18"],
+                "compatibility": {},
+            },
+        },
+        training={"validation": {}},
+        source_identities={},
+    ))
+    output = tmp_path / "migrated"
+    result = BrainRuntimeMigrator(brain).migrate(custom, output, source=16, target=18)
+    xml = (output / "custom_view" / "views.xml").read_text(encoding="utf-8")
+    manifest = ast.literal_eval((output / "custom_view" / "__manifest__.py").read_text(encoding="utf-8"))
+
+    assert manifest["version"].startswith("18.")
+    assert "<list>" in xml
+    assert "attrs=" not in xml
+    assert result.metadata_path.is_file()
+
+
+def test_brain_runtime_reports_security_and_template_compatibility_without_source(tmp_path: Path):
+    custom = tmp_path / "custom"
+    module = _addon(custom, "custom_security", 18)
+    (module / "security").mkdir()
+    (module / "security" / "ir.model.access.csv").write_text(
+        "id,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink\n"
+        "access_old,base.model_old,base.group_old,1,0,0,0\n",
+        encoding="utf-8",
+    )
+    (module / "views.xml").write_text(
+        "<odoo><template id='custom_template' t-inherit='base.template_changed'>"
+        "<xpath expr=\"//div\" position='inside'><span/></xpath>"
+        "</template></odoo>",
+        encoding="utf-8",
+    )
+    brain = BrainPack(new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {
+            "source": 18,
+            "target": 19,
+            "automatic_rules": [],
+            "compatibility": {
+                "removed_model_xml_ids": ["base.model_old"],
+                "removed_group_xml_ids": ["base.group_old"],
+                "changed_template_architectures": ["base.template_changed"],
+            },
+        }},
+        training={"validation": {}},
+        source_identities={},
+    ))
+
+    result = BrainRuntimeMigrator(brain).migrate(
+        custom, tmp_path / "migrated", source=18, target=19
+    )
+
+    codes = {finding.code for finding in result.findings}
+    assert "brain.security.model_removed" in codes
+    assert "brain.security.group_removed" in codes
+    assert "brain.qweb.architecture_changed" in codes
+    assert result.validation_state == "blocked"
+
+
+def test_brain_does_not_guess_cross_model_method_moves(tmp_path: Path):
+    custom = tmp_path / "custom"
+    module = _addon(custom, "custom_models", 18, model="old.model")
+    source = module / "models.py"
+    original = source.read_text(encoding="utf-8")
+    source.write_text(original.replace("def stable_method", "def moved_method"), encoding="utf-8")
+    brain = BrainPack(new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {
+            "source": 18,
+            "target": 19,
+            "automatic_rules": [],
+            "compatibility": {
+                "method_moves": [{
+                    "method": "moved_method",
+                    "from_model": "old.model",
+                    "to_model": "new.model",
+                }],
+            },
+        }},
+        training={"validation": {}},
+        source_identities={},
+    ))
+    result = BrainRuntimeMigrator(brain).migrate(
+        custom, tmp_path / "migrated", source=18, target=19
+    )
+
+    migrated = (tmp_path / "migrated" / "custom_models" / "models.py").read_text(encoding="utf-8")
+    assert migrated == source.read_text(encoding="utf-8")
+    assert any(item.code == "brain.method.moved" for item in result.findings)

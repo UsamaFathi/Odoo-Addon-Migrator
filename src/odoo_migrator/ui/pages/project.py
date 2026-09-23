@@ -168,7 +168,8 @@ class ProjectPage(QWidget):
         return self.brain_mode.isChecked() and self.brain_mode.isEnabled()
 
     def set_brain(self, path: Path | None, *, source: int | None = None,
-                  target: int | None = None, fingerprint: str | None = None) -> None:
+                  target: int | None = None, fingerprint: str | None = None,
+                  training: dict | None = None) -> None:
         if path is None:
             self.brain_status.setText("Migration Brain not configured")
             self.brain_status.set_role("badgeInfo")
@@ -183,6 +184,16 @@ class ProjectPage(QWidget):
         range_text = f"Odoo {source} → {target}" if source is not None and target is not None else "Ready"
         fp = f"\nFingerprint: {fingerprint[:12]}…" if fingerprint else ""
         self.brain_path.setText(f"{range_text}\n{path}{fp}")
+        metrics = (training or {}).get("metrics", {}) or (training or {}).get("validation", {})
+        metric_text = ""
+        if metrics:
+            metric_text = (
+                f"\nValidation precision {float(metrics.get('precision', 0.0)):.3f}"
+                f"  •  F1 {float(metrics.get('f1', 0.0)):.3f}"
+            )
+        enterprise = (training or {}).get("enterprise_versions", [])
+        enterprise_text = "Enterprise knowledge included" if enterprise else "Community knowledge only"
+        self.brain_path.setText(f"{range_text}\n{path}\n{fp.lstrip(chr(10))}\n{enterprise_text}{metric_text}")
         self.brain_path.setToolTip(str(path))
         self.brain_mode.setEnabled(True)
         self.brain_forget_button.show()
@@ -196,6 +207,7 @@ class ProjectPage(QWidget):
     def _brain_mode_changed(self, enabled: bool) -> None:
         self.analyze_button.setText("Migrate with Brain  →" if enabled else "Analyze & auto-resolve  →")
         self.autonomous_mode.setVisible(not enabled)
+        self.sources.setVisible(not enabled)
 
     def set_scan(self, scan) -> None:
         stats = scan.file_statistics; values = (scan.module_count, stats["python"], stats["xml"], stats["javascript"], stats["csv"])

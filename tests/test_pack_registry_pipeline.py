@@ -56,7 +56,8 @@ def test_registry_support_and_unsupported_paths():
         "xml.action_view_mode.tree_to_list.17_to_18",
     ]
     assert [rule.rule_id for rule in MigrationEngine(registry).rules_for(18, 19)] == [
-        "manifest.version.18_to_19"
+        "manifest.version.18_to_19",
+        "python.sql_constraints_to_models_constraint.18_to_19",
     ]
 
 

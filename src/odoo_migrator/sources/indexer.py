@@ -9,7 +9,7 @@ import hashlib
 import inspect
 import re
 
-INDEX_SCHEMA_VERSION = 8
+INDEX_SCHEMA_VERSION = 10
 
 
 def _json_safe(value):
@@ -35,12 +35,15 @@ class ModelInfo:
     method_locations: dict[str, tuple[str, int]] = field(default_factory=dict)
     field_locations: dict[str, tuple[str, int]] = field(default_factory=dict)
     method_features: dict[str, dict] = field(default_factory=dict)
+    field_features: dict[str, dict] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {"name": self.name, "methods": sorted(self.methods), "fields": sorted(self.fields),
                 "inherits": sorted(self.inherits), "delegated_inherits": sorted(self.delegated_inherits), "signatures": self.signatures,
                 "source_path": self.source_path, "line": self.line, "method_locations": self.method_locations,
-                "field_locations": self.field_locations, "method_features": _json_safe(self.method_features)}
+                "field_locations": self.field_locations,
+                "method_features": _json_safe(self.method_features),
+                "field_features": _json_safe(self.field_features)}
 
 
 @dataclass(slots=True)
@@ -66,11 +69,14 @@ class ModuleInfo:
     controllers: dict[str, list[str]] = field(default_factory=dict)
     assets: set[str] = field(default_factory=set)
     views: dict[str, ViewInfo] = field(default_factory=dict)
+    templates: dict[str, ViewInfo] = field(default_factory=dict)
     model_xml_ids: dict[str, str] = field(default_factory=dict)
+    group_xml_ids: set[str] = field(default_factory=set)
     defined_models: set[str] = field(default_factory=set)
     js_modules: set[str] = field(default_factory=set)
     js_dependencies: set[str] = field(default_factory=set)
     js_module_locations: dict[str, str] = field(default_factory=dict)
+    source_layer: str = "community"
 
     def to_json(self) -> dict:
         return {
@@ -84,11 +90,14 @@ class ModuleInfo:
             "controllers": self.controllers,
             "assets": sorted(self.assets),
             "views": {k: v.to_json() for k, v in self.views.items()},
+            "templates": {k: v.to_json() for k, v in self.templates.items()},
             "model_xml_ids": self.model_xml_ids,
+            "group_xml_ids": sorted(self.group_xml_ids),
             "defined_models": sorted(self.defined_models),
             "js_modules": sorted(self.js_modules),
             "js_dependencies": sorted(self.js_dependencies),
             "js_module_locations": self.js_module_locations,
+            "source_layer": self.source_layer,
         }
 
 
@@ -115,6 +124,7 @@ class OdooIndex:
                 item.method_locations.update(info.method_locations)
                 item.field_locations.update(info.field_locations)
                 item.method_features.update(info.method_features)
+                item.field_features.update(info.field_features)
                 if not item.source_path: item.source_path, item.line = info.source_path, info.line
         return merged
 
@@ -128,6 +138,10 @@ class OdooIndex:
     @property
     def model_xml_ids(self) -> dict[str, str]:
         return {xml_id: model for module in self.modules.values() for xml_id, model in module.model_xml_ids.items()}
+
+    @property
+    def group_xml_ids(self) -> set[str]:
+        return {xml_id for module in self.modules.values() for xml_id in module.group_xml_ids}
 
     @property
     def js_modules(self) -> set[str]:
@@ -190,7 +204,11 @@ class SourceIndexer:
             if ".git" in manifest.parts:
                 continue
             module_dir = manifest.parent
-            module = ModuleInfo(name=module_dir.name, path=str(module_dir))
+            module = ModuleInfo(
+                name=module_dir.name,
+                path=str(module_dir),
+                source_layer=("enterprise" if "enterprise" in (source_mode or "").lower() else "community"),
+            )
             module.manifest = self._manifest(manifest)
             module.depends = [str(x) for x in module.manifest.get("depends", [])]
             module.files = {"python": len(list(module_dir.rglob("*.py"))),
@@ -216,8 +234,9 @@ class SourceIndexer:
         digest = hashlib.sha256()
         for path in sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts):
             digest.update(path.relative_to(root).as_posix().encode())
-            digest.update(str(path.stat().st_size).encode())
-            digest.update(str(path.stat().st_mtime_ns).encode())
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
         return digest.hexdigest()
 
     @staticmethod
@@ -242,16 +261,19 @@ class SourceIndexer:
             info = ModuleInfo(name=name, path=raw["path"], depends=raw.get("depends", []), xml_ids=set(raw.get("xml_ids", [])),
                               manifest=raw.get("manifest", {}), files=raw.get("files", {}), controllers=raw.get("controllers", {}), assets=set(raw.get("assets", [])),
                               views={key: ViewInfo(value["xml_id"], value.get("inherit_id"), tuple(value.get("xpaths", [])), value.get("architecture", "")) for key, value in raw.get("views", {}).items()},
-                              model_xml_ids=raw.get("model_xml_ids", {}), defined_models=set(raw.get("defined_models", [])),
+                              templates={key: ViewInfo(value["xml_id"], value.get("inherit_id"), tuple(value.get("xpaths", [])), value.get("architecture", "")) for key, value in raw.get("templates", {}).items()},
+                              model_xml_ids=raw.get("model_xml_ids", {}), group_xml_ids=set(raw.get("group_xml_ids", [])), defined_models=set(raw.get("defined_models", [])),
                               js_modules=set(raw.get("js_modules", [])), js_dependencies=set(raw.get("js_dependencies", [])),
-                              js_module_locations=raw.get("js_module_locations", {}))
+                              js_module_locations=raw.get("js_module_locations", {}),
+                              source_layer=raw.get("source_layer", "community"))
             for model, model_raw in raw.get("models", {}).items():
                 info.models[model] = ModelInfo(model, set(model_raw.get("methods", [])), set(model_raw.get("fields", [])),
                                                set(model_raw.get("inherits", [])), set(model_raw.get("delegated_inherits", [])), model_raw.get("signatures", {}),
                                                model_raw.get("source_path"), model_raw.get("line"),
                                                {k: tuple(v) for k, v in model_raw.get("method_locations", {}).items()},
                                                {k: tuple(v) for k, v in model_raw.get("field_locations", {}).items()},
-                                               model_raw.get("method_features", {}))
+                                               model_raw.get("method_features", {}),
+                                               model_raw.get("field_features", {}))
             modules[name] = info
         return OdooIndex(
             root=data.get("root", ""), modules=modules,
@@ -312,7 +334,9 @@ class SourceIndexer:
                             targets = child.targets if isinstance(child, ast.Assign) else [child.target]
                             if self._is_fields_call(child.value):
                                 for target in targets:
-                                    if isinstance(target, ast.Name): info.field_locations[target.id] = (relative_path, child.lineno)
+                                    if isinstance(target, ast.Name):
+                                        info.field_locations[target.id] = (relative_path, child.lineno)
+                                        info.field_features[target.id] = self._field_features(child.value)
 
     @staticmethod
     def _qualified_name(node: ast.AST | None) -> str | None:
@@ -419,6 +443,34 @@ class SourceIndexer:
         obj = value.func.value
         return isinstance(obj, ast.Name) and obj.id == "fields"
 
+    @staticmethod
+    def _literal_value(value: ast.AST | None):
+        if isinstance(value, ast.Constant) and isinstance(value.value, (str, int, float, bool, type(None))):
+            return value.value
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            values = []
+            for item in value.elts:
+                literal = SourceIndexer._literal_value(item)
+                if literal is None:
+                    return None
+                values.append(literal)
+            return values
+        return None
+
+    @staticmethod
+    def _field_features(value: ast.AST | None) -> dict:
+        """Capture literal field declaration metadata as derived knowledge."""
+        if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Attribute):
+            return {}
+        features = {"type": value.func.attr}
+        for keyword in value.keywords:
+            if keyword.arg is None:
+                continue
+            literal = SourceIndexer._literal_value(keyword.value)
+            if literal is not None:
+                features[keyword.arg] = literal
+        return features
+
     @classmethod
     def _scan_javascript(cls, module_dir: Path, module: ModuleInfo) -> None:
         for path in module_dir.rglob("*.js"):
@@ -516,3 +568,18 @@ class SourceIndexer:
                     model_field = next((field.text for field in elem.findall("field") if field.attrib.get("name") == "model"), None)
                     if model_field:
                         module.model_xml_ids[f"{module.name}.{xml_id}"] = model_field.strip()
+                if elem.tag == "record" and elem.attrib.get("model") == "res.groups" and xml_id:
+                    module.group_xml_ids.add(f"{module.name}.{xml_id}")
+                if elem.tag == "template" and xml_id:
+                    inherit_id = elem.attrib.get("inherit_id") or elem.attrib.get("t-inherit")
+                    xpaths = tuple(
+                        node.attrib.get("expr", "")
+                        for node in elem.iter("xpath")
+                        if node.attrib.get("expr")
+                    )
+                    architecture = "".join(
+                        ET.tostring(child, encoding="unicode") for child in list(elem)
+                    )
+                    module.templates[f"{module.name}.{xml_id}"] = ViewInfo(
+                        f"{module.name}.{xml_id}", inherit_id, xpaths, architecture
+                    )

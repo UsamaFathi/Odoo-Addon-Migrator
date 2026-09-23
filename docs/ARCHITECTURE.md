@@ -50,3 +50,37 @@ Every cached Odoo checkout records its Git branch, origin and exact commit hash 
 - Auto-fixes must be deterministic and safe enough to explain in a diff.
 - Ambiguous changes become review findings instead of silent edits.
 - Original addons are never mutated by default.
+
+## Migration Brain
+
+The reusable Migration Brain is a separate training/runtime boundary, not a
+replacement for the source-aware engine:
+
+```text
+TRAINING (developer/advanced use)
+Official Community snapshots + authorized local Enterprise
+    -> indexed adjacent source diffs
+    -> grouped semantic dataset
+    -> lightweight ranker + deterministic knowledge
+    -> migration_brain.omb
+
+RUNTIME (normal Brain use)
+Custom addons + .omb
+    -> custom-only index
+    -> deterministic adjacent rules and guarded mappings
+    -> fixed-point static validation
+    -> separate output, diff, report, and decision metadata
+```
+
+The `.omb` archive contains one fingerprinted JSON member with derived
+compatibility facts, model parameters, rule metadata, training identities and
+evaluation metrics. It never contains Odoo source text or Enterprise source.
+Runtime Brain migration does not acquire, checkout, or index Odoo Community or
+Enterprise trees; `source_code_indexed_at_runtime` is recorded as false. The
+source-aware `AnalysisService` remains available for fallback and for building
+or evaluating Brain packs.
+
+Brain automatic changes are precision-first. The ranker proposes candidates,
+but AST/token-aware deterministic transforms and confidence/margin gates decide
+whether a Python mapping may be applied. Unresolved API, security, XML/QWeb,
+frontend, and asset compatibility facts are retained as review findings.

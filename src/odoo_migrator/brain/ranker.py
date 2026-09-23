@@ -32,6 +32,15 @@ class Evaluation:
     recall: float
     f1: float
     log_loss: float
+    true_positives: int = 0
+    false_positives: int = 0
+    true_negatives: int = 0
+    false_negatives: int = 0
+
+    @property
+    def false_positive_rate(self) -> float:
+        denominator = self.false_positives + self.true_negatives
+        return self.false_positives / denominator if denominator else 0.0
 
     def as_dict(self) -> dict:
         return {
@@ -41,6 +50,11 @@ class Evaluation:
             "recall": round(self.recall, 6),
             "f1": round(self.f1, 6),
             "log_loss": round(self.log_loss, 6),
+            "true_positives": self.true_positives,
+            "false_positives": self.false_positives,
+            "true_negatives": self.true_negatives,
+            "false_negatives": self.false_negatives,
+            "false_positive_rate": round(self.false_positive_rate, 6),
         }
 
 
@@ -144,6 +158,10 @@ class LogisticRanker:
             recall,
             f1,
             loss / total_weight if total_weight else 0.0,
+            tp,
+            fp,
+            tn,
+            fn,
         )
 
     def as_dict(self) -> dict:

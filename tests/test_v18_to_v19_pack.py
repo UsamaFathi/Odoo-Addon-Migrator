@@ -10,7 +10,7 @@ from odoo_migrator.migrations.registry import default_registry
 from odoo_migrator.migrations.v18_to_v19.dependencies import analyze as analyze_dependencies
 from odoo_migrator.migrations.v18_to_v19.frontend import analyze as analyze_frontend
 from odoo_migrator.migrations.v18_to_v19.manifest import Manifest18To19Rule
-from odoo_migrator.migrations.v18_to_v19.python import analyze as analyze_python
+from odoo_migrator.migrations.v18_to_v19.python import analyze as analyze_python, SqlConstraintsToModelsConstraintRule
 from odoo_migrator.migrations.v18_to_v19.reports import analyze as analyze_reports
 from odoo_migrator.migrations.v18_to_v19.security import analyze as analyze_security
 from odoo_migrator.migrations.v18_to_v19.xml import analyze as analyze_xml
@@ -36,6 +36,28 @@ def test_manifest_18_to_19_positive_noop_wrong_source_malformed_and_idempotent(t
     (first / "__manifest__.py").write_text("{'name': 'First', 'version': '17.0.1'}")
     (second / "__manifest__.py").write_text("{'name': 'Second', 'version': '18.0.1'")
     assert rule.apply(tmp_path) == []
+
+
+def test_sql_constraints_are_converted_from_official_18_to_19_upgrade_rule(tmp_path: Path):
+    path = tmp_path / "model.py"
+    path.write_text(
+        """from odoo import models
+
+class Demo(models.Model):
+    _name = 'demo.model'
+    _sql_constraints = [
+        ('demo_unique', 'UNIQUE(code)', 'Code must be unique.'),
+    ]
+""",
+        encoding="utf-8",
+    )
+    changes = SqlConstraintsToModelsConstraintRule().apply(tmp_path)
+    updated = path.read_text(encoding="utf-8")
+    assert len(changes) == 1
+    assert "_demo_unique = models.Constraint(" in updated
+    assert "_sql_constraints" not in updated
+    assert "models.Constraint" in updated
+    assert SqlConstraintsToModelsConstraintRule().apply(tmp_path) == []
 
 
 def _python_indexes():
@@ -128,7 +150,10 @@ def test_direct_18_to_19_xml_does_not_replay_tree_list_or_action_rules(tmp_path:
     target = OdooIndex("19", {"sale": ModuleInfo("sale", "sale", xml_ids={"sale.view_order_tree"}, views={"sale.view_order_tree": ViewInfo("sale.view_order_tree", architecture="<list><field name='name'/></list>" )})})
     findings = analyze_xml(custom, source, target, compare_indexes(source, target))
     assert not findings
-    assert [rule.rule_id for rule in default_registry().get(18, 19).rule_factory()] == ["manifest.version.18_to_19"]
+    assert [rule.rule_id for rule in default_registry().get(18, 19).rule_factory()] == [
+        "manifest.version.18_to_19",
+        "python.sql_constraints_to_models_constraint.18_to_19",
+    ]
 
 
 def test_security_valid_invalid_and_malformed(tmp_path: Path):

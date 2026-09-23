@@ -169,6 +169,7 @@ class MainWindow(QMainWindow):
             source=pack.source,
             target=pack.target,
             fingerprint=pack.fingerprint,
+            training=pack.training,
         )
 
     def _select_brain(self) -> None:
@@ -228,7 +229,8 @@ class MainWindow(QMainWindow):
             "Migration Brain trained",
             output=result.output,
             samples=result.training_samples,
-            accuracy=metrics.get("accuracy", "n/a"),
+            precision=metrics.get("precision", "n/a"),
+            f1=metrics.get("f1", "n/a"),
             method_renames=result.method_renames,
         )
         QMessageBox.information(
@@ -238,7 +240,10 @@ class MainWindow(QMainWindow):
                 f"Brain pack created successfully.\n\n"
                 f"{result.output}\n\n"
                 f"Training samples: {result.training_samples}\n"
-                f"Validation accuracy: {metrics.get('accuracy', 0):.3f}\n"
+                f"Validation precision: {metrics.get('precision', 0):.3f}\n"
+                f"Validation recall: {metrics.get('recall', 0):.3f}\n"
+                f"Validation F1: {metrics.get('f1', 0):.3f}\n"
+                f"False-positive rate: {metrics.get('false_positive_rate', 0):.3f}\n"
                 f"Learned method renames: {result.method_renames}"
             ),
         )
