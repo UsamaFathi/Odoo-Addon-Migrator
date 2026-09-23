@@ -145,4 +145,12 @@ def high_confidence_method_renames(
                     round(margin, 4),
                     evidence,
                 ))
-    return tuple(matches)
+    target_use: dict[tuple[str, str], int] = {}
+    for match in matches:
+        key = (match.model, match.target_method)
+        target_use[key] = target_use.get(key, 0) + 1
+    return tuple(
+        match
+        for match in matches
+        if target_use[(match.model, match.target_method)] == 1
+    )
