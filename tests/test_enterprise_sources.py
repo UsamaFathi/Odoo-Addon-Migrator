@@ -173,3 +173,19 @@ def test_direct_enterprise_folder_does_not_treat_module_versions_as_odoo_version
     assert resolved.mode == "direct_folder"
     assert resolved.version == 16
     assert resolved.source_root == root.resolve()
+
+
+
+def test_enterprise_root_discovers_common_enterprise_version_folder_names(tmp_path: Path):
+    root = tmp_path / "enterprise-all"
+    module = root / "odoo-enterprise-16.0" / "web_enterprise"
+    module.mkdir(parents=True)
+    (module / "__manifest__.py").write_text(
+        repr({"name": "web_enterprise", "version": "1.0"}),
+        encoding="utf-8",
+    )
+
+    resolved = resolve_enterprise_source(root, 16, cache_root=tmp_path / "cache")
+
+    assert resolved.mode == "version_folder"
+    assert resolved.source_root == (root / "odoo-enterprise-16.0").resolve()
