@@ -133,7 +133,7 @@ def _model_ownership_changes(source: OdooIndex, target: OdooIndex) -> list[dict[
 
 def _flatten_views(index: OdooIndex, attribute: str) -> dict[str, Any]:
     return {
-        key: value
+        key: (module.name, value)
         for module in index.modules.values()
         for key, value in getattr(module, attribute).items()
     }
@@ -180,19 +180,28 @@ def xml_id_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str, Any]]
             old,
             new,
             signature=lambda item: (
-                item.inherit_id or "",
-                tuple(item.xpaths),
-                item.architecture,
+                item[0],
+                item[1].inherit_id or "",
+                tuple(item[1].xpaths),
+                item[1].architecture,
             ),
             kind=kind,
         ))
 
-    old_model_ids = source.model_xml_ids
-    new_model_ids = target.model_xml_ids
+    old_model_ids = {
+        xml_id: (module.name, model)
+        for module in source.modules.values()
+        for xml_id, model in module.model_xml_ids.items()
+    }
+    new_model_ids = {
+        xml_id: (module.name, model)
+        for module in target.modules.values()
+        for xml_id, model in module.model_xml_ids.items()
+    }
     values.extend(_unique_exact_identifier_mappings(
         old_model_ids,
         new_model_ids,
-        signature=lambda model: model,
+        signature=lambda item: item,
         kind="model_xml_id",
     ))
     return values
