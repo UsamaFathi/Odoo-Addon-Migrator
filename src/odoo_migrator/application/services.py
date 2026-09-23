@@ -13,7 +13,8 @@ from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.sources.registry import SourceMode, SourceSelection, SourceSnapshot
 from odoo_migrator.sources.diff import compare_indexes
-from odoo_migrator.sources.composite import compose_indexes, validate_addons_source
+from odoo_migrator.sources.composite import compose_indexes
+from odoo_migrator.sources.enterprise import resolve_enterprise_source
 from odoo_migrator.migrations.registry import MigrationPackRegistry, default_registry
 import tempfile
 import shutil
@@ -154,6 +155,7 @@ class AnalysisService:
                 snapshots[version] = manager.resolve_selection(selection) if selection else manager.ensure(version)
             report(f"Preparing Odoo {version}", 15 + offset * 6)
         indexes = {}
+        resolved_enterprise_sources: dict[int, Path] = {}
         for offset, version in enumerate(snapshots):
             report(f"Indexing Odoo {version}", 30 + offset * 4)
             indexes[version] = indexer.index(
@@ -164,7 +166,9 @@ class AnalysisService:
             )
             enterprise_path = (enterprise_sources or {}).get(version)
             if enterprise_path:
-                enterprise_root = validate_addons_source(enterprise_path)
+                resolution = resolve_enterprise_source(enterprise_path, version)
+                enterprise_root = resolution.source_root
+                resolved_enterprise_sources[version] = enterprise_root
                 report(f"Indexing Odoo {version} Enterprise source", 32 + offset * 4)
                 enterprise_index = indexer.index(
                     enterprise_root,
@@ -295,7 +299,7 @@ class AnalysisService:
             tuple(step_results),
             tuple(resolved_findings),
             total_resolution_passes,
-            tuple(sorted((version, str(validate_addons_source(path))) for version, path in (enterprise_sources or {}).items())),
+            tuple(sorted((version, str(path)) for version, path in resolved_enterprise_sources.items())),
         )
 
 
