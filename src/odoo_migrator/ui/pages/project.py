@@ -173,6 +173,7 @@ class ProjectPage(QWidget):
             self.brain_status.setText("Migration Brain not configured")
             self.brain_status.set_role("badgeInfo")
             self.brain_path.setText("Train once from Odoo source, then migrate custom addons without source indexing.")
+            self.brain_path.setToolTip("")
             self.brain_mode.setChecked(False); self.brain_mode.setEnabled(False)
             self.brain_forget_button.hide()
             self._brain_mode_changed(False)
