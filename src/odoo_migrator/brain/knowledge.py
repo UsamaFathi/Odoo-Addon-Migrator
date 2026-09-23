@@ -200,18 +200,18 @@ def xml_id_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str, Any]]
 
 def js_module_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str, Any]]:
     old_locations = {
-        name: location
+        name: (module.name, location)
         for module in source.modules.values()
         for name, location in module.js_module_locations.items()
     }
     new_locations = {
-        name: location
+        name: (module.name, location)
         for module in target.modules.values()
         for name, location in module.js_module_locations.items()
     }
     removed = sorted(set(old_locations) - set(new_locations))
     added = sorted(set(new_locations) - set(old_locations))
-    by_location: dict[str, list[str]] = {}
+    by_location: dict[tuple[str, str], list[str]] = {}
     for name in added:
         by_location.setdefault(new_locations[name], []).append(name)
 
@@ -226,7 +226,7 @@ def js_module_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str, An
             "from": name,
             "to": replacement,
             "confidence": 1.0,
-            "evidence": "unique_same_static_source_location",
+            "evidence": "unique_same_module_and_static_source_location",
         })
         target_use[replacement] = target_use.get(replacement, 0) + 1
     return [item for item in values if target_use[item["to"]] == 1]
@@ -240,10 +240,10 @@ def _asset_bundle_signatures(index: OdooIndex) -> dict[str, tuple]:
             continue
         for bundle, entries in assets.items():
             if isinstance(entries, (list, tuple)):
-                signature = tuple(str(item) for item in entries)
+                declaration = tuple(str(item) for item in entries)
             else:
-                signature = (str(entries),)
-            signatures[str(bundle)] = signature
+                declaration = (str(entries),)
+            signatures[str(bundle)] = (module.name, declaration)
     return signatures
 
 
@@ -267,7 +267,7 @@ def asset_bundle_renames(source: OdooIndex, target: OdooIndex) -> list[dict[str,
             "from": name,
             "to": replacement,
             "confidence": 1.0,
-            "evidence": "unique_exact_asset_declaration",
+            "evidence": "unique_same_module_exact_asset_declaration",
         })
         target_use[replacement] = target_use.get(replacement, 0) + 1
     return [item for item in values if target_use[item["to"]] == 1]
