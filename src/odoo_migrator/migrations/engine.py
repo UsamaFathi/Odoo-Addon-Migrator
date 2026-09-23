@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 from tempfile import mkdtemp
 import os
 import shutil as _shutil
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from odoo_migrator import __version__
 from odoo_migrator.sources.registry import SourceSnapshot
 from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.sources.diff import compare_indexes
+from odoo_migrator.sources.composite import compose_indexes, validate_addons_source
 from odoo_migrator.validation import ValidationItem, validate_project
 
 from odoo_migrator.core.planner import MigrationPlan, build_plan
@@ -47,6 +48,7 @@ class MigrationEngine:
                 target_snapshot: SourceSnapshot | None = None,
                 source_snapshots: Iterable[SourceSnapshot] | None = None,
                 findings: Iterable[object] = (), modules_analyzed: int | None = None,
+                enterprise_sources: Mapping[int, str | Path] | None = None,
                 progress: Callable[[str, int], None] | None = None) -> MigrationResult:
         def report(stage: str, percent: int) -> None:
             if progress:
@@ -100,6 +102,16 @@ class MigrationEngine:
                 source_mode=snapshot.source_mode.value,
                 source_version=version,
             )
+            enterprise_path = (enterprise_sources or {}).get(version)
+            if enterprise_path:
+                enterprise_root = validate_addons_source(enterprise_path)
+                enterprise_index = indexer.index(
+                    enterprise_root,
+                    cache_dir=Path.home() / ".odoo-addon-migrator" / "enterprise-indexes",
+                    source_mode="enterprise_local",
+                    source_version=version,
+                )
+                source_indexes[version] = compose_indexes(source_indexes[version], enterprise_index)
         try:
             report("Creating safe output copy", 5)
             for step in plan.steps:
@@ -146,6 +158,10 @@ class MigrationEngine:
                 "source_snapshot": source_snapshot.as_dict() if source_snapshot else None,
                 "target_snapshot": target_snapshot.as_dict() if target_snapshot else None,
                 "source_snapshots": [snapshot.as_dict() for snapshot in snapshot_tuple],
+                "enterprise_sources": {
+                    str(version): str(validate_addons_source(path))
+                    for version, path in sorted((enterprise_sources or {}).items())
+                },
                 "validation": {"state": "not_run", "level": 0},
                 "rules": sorted({c.rule_id for c in changes}),
                 "rule_versions": {

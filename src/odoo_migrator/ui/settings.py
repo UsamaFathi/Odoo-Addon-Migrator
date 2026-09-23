@@ -92,6 +92,28 @@ class DesktopSettings:
         self._settings.remove(f"sources/{version}")
         self._settings.sync()
 
+    def load_enterprise_source(self, version: int) -> Path | None:
+        value = self._settings.value(f"enterprise_sources/{version}", "")
+        if not value:
+            return None
+        try:
+            path = Path(str(value)).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        try:
+            return path if path.is_dir() and any(item.name == "__manifest__.py" for item in path.rglob("__manifest__.py")) else None
+        except OSError:
+            return None
+
+    def save_enterprise_source(self, version: int, path: str | Path) -> None:
+        resolved = Path(path).expanduser().resolve()
+        self._settings.setValue(f"enterprise_sources/{version}", str(resolved))
+        self._settings.sync()
+
+    def forget_enterprise_source(self, version: int) -> None:
+        self._settings.remove(f"enterprise_sources/{version}")
+        self._settings.sync()
+
     def clear(self) -> None:
         self._settings.clear()
         self._settings.sync()

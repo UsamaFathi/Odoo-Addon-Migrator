@@ -52,6 +52,8 @@ class ProjectPage(QWidget):
     localSourceRequested = Signal(int)
     downloadSourceRequested = Signal(int)
     forgetSourceRequested = Signal(int)
+    enterpriseSourceRequested = Signal(int)
+    enterpriseForgetRequested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,6 +72,8 @@ class ProjectPage(QWidget):
         self.sources.localRequested.connect(self.localSourceRequested)
         self.sources.downloadRequested.connect(self.downloadSourceRequested)
         self.sources.forgetRequested.connect(self.forgetSourceRequested)
+        self.sources.enterpriseRequested.connect(self.enterpriseSourceRequested)
+        self.sources.enterpriseForgetRequested.connect(self.enterpriseForgetRequested)
         self.metrics = []
         self.model = AddonsModel(self); self.modules = QTableView(); self.modules.setModel(self.model); self.modules.setSortingEnabled(True); self.modules.setAlternatingRowColors(True)
         self.modules.setSelectionBehavior(QTableView.SelectRows); self.modules.verticalHeader().setDefaultSectionSize(36); self.modules.horizontalHeader().setStretchLastSection(True)
@@ -166,8 +170,9 @@ class ProjectPage(QWidget):
     def state_ready(self) -> bool:
         return self.path_picker.path().is_dir()
 
-    def set_source_requirements(self, source: int, target: int, snapshots=None, selections: dict[int, SourceSelection] | None = None) -> None:
-        self.sources.set_versions(list(range(source, target + 1)), snapshots, selections)
+    def set_source_requirements(self, source: int, target: int, snapshots=None, selections: dict[int, SourceSelection] | None = None,
+                                enterprise_sources: dict[int, Path] | None = None) -> None:
+        self.sources.set_versions(list(range(source, target + 1)), snapshots, selections, enterprise_sources)
 
     def set_error(self, message: str) -> None:
         self._set_status(message, "badgeDanger")

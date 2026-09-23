@@ -13,6 +13,7 @@ from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.sources.registry import SourceMode, SourceSelection, SourceSnapshot
 from odoo_migrator.sources.diff import compare_indexes
+from odoo_migrator.sources.composite import compose_indexes, validate_addons_source
 from odoo_migrator.migrations.registry import MigrationPackRegistry, default_registry
 import tempfile
 import shutil
@@ -29,6 +30,7 @@ class AnalysisResult:
     steps: tuple["AdjacentAnalysis", ...] = ()
     resolved_findings: tuple[Finding, ...] = ()
     resolution_passes: int = 0
+    enterprise_sources: tuple[tuple[int, str], ...] = ()
 
     @property
     def blockers(self) -> tuple[Finding, ...]:
@@ -121,7 +123,8 @@ class AnalysisService:
 
     def analyze(self, root: Path, source: int, target: int, manager: SourceManager | None = None,
                 progress: Callable[[str, int], None] | None = None,
-                source_selections: Mapping[int, SourceSelection] | None = None) -> AnalysisResult:
+                source_selections: Mapping[int, SourceSelection] | None = None,
+                enterprise_sources: Mapping[int, Path] | None = None) -> AnalysisResult:
         def report(stage: str, percent: int) -> None:
             if progress:
                 progress(stage, percent)
@@ -159,6 +162,17 @@ class AnalysisService:
                 source_mode=snapshots[version].source_mode.value,
                 source_version=version,
             )
+            enterprise_path = (enterprise_sources or {}).get(version)
+            if enterprise_path:
+                enterprise_root = validate_addons_source(enterprise_path)
+                report(f"Indexing Odoo {version} Enterprise source", 32 + offset * 4)
+                enterprise_index = indexer.index(
+                    enterprise_root,
+                    cache_dir=Path.home() / ".odoo-addon-migrator" / "enterprise-indexes",
+                    source_mode="enterprise_local",
+                    source_version=version,
+                )
+                indexes[version] = compose_indexes(indexes[version], enterprise_index)
         report("Official source indexes ready", 42)
         findings = []
         resolved_findings = []
@@ -281,6 +295,7 @@ class AnalysisService:
             tuple(step_results),
             tuple(resolved_findings),
             total_resolution_passes,
+            tuple(sorted((version, str(validate_addons_source(path))) for version, path in (enterprise_sources or {}).items())),
         )
 
 
@@ -302,4 +317,5 @@ class MigrationService:
                                          source_snapshots=tuple(ordered_snapshots),
                                          findings=analysis.findings,
                                          modules_analyzed=analysis.scan.module_count,
+                                         enterprise_sources={version: Path(path) for version, path in analysis.enterprise_sources},
                                          progress=progress)

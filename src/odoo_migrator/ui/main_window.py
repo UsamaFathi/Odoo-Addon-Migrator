@@ -13,6 +13,7 @@ from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.migrations.registry import default_registry
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.sources.registry import SourceMode, SourceSelection
+from odoo_migrator.sources.composite import validate_addons_source
 from odoo_migrator.ui.icons import app_icon
 from odoo_migrator.ui.models.application_state import ApplicationState
 from odoo_migrator.ui.pages.analysis import AnalysisPage
@@ -72,6 +73,7 @@ class MainWindow(QMainWindow):
         self.source_manager = getattr(self.analysis_service, "source_manager", None) or SourceManager()
         if getattr(self.analysis_service, "source_manager", None) is None: self.analysis_service.source_manager = self.source_manager
         self.source_selections: dict[int, SourceSelection] = {}
+        self.enterprise_sources: dict[int, Path] = {}
         self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._task_success_callback = None; self._task_busy_callback = None; self._auto_migrate_pending = False; self._log_dir = configure_logging()
         if settings is None:
             self.settings = DesktopSettings()
@@ -98,7 +100,7 @@ class MainWindow(QMainWindow):
         root = QWidget(); root.setObjectName("appRoot"); root_layout = QHBoxLayout(root); root_layout.setContentsMargins(0, 0, 0, 0); root_layout.setSpacing(0); root_layout.addWidget(self.steps); root_layout.addWidget(content, 1); self.setCentralWidget(root); self.setStyleSheet(APP_STYLE)
         self.project_page.path_picker.pathChanged.connect(self._path_changed); self.project_page.sourceChanged.connect(self._source_changed); self.project_page.targetChanged.connect(self._target_changed); self.project_page.analyzeRequested.connect(self._analyze); self.project_page.outputChanged.connect(self._output_changed)
         self.analysis_page.backRequested.connect(lambda: self._show_page(0, 0)); self.analysis_page.migrateRequested.connect(self._migrate); self.results_page.openOutputRequested.connect(self._open_output); self.results_page.openReportRequested.connect(self._open_report); self.results_page.openDiffRequested.connect(self._open_diff); self.results_page.newProjectRequested.connect(self._new_project); self.analysis_page.details.openLocation.connect(self._open_finding_location)
-        self.project_page.localSourceRequested.connect(self._choose_local_source); self.project_page.downloadSourceRequested.connect(self._choose_verified_source); self.project_page.forgetSourceRequested.connect(self._forget_source)
+        self.project_page.localSourceRequested.connect(self._choose_local_source); self.project_page.downloadSourceRequested.connect(self._choose_verified_source); self.project_page.forgetSourceRequested.connect(self._forget_source); self.project_page.enterpriseSourceRequested.connect(self._choose_enterprise_source); self.project_page.enterpriseForgetRequested.connect(self._forget_enterprise_source)
 
     def _restore_settings(self) -> None:
         geometry = self.settings.load_geometry()
@@ -106,6 +108,9 @@ class MainWindow(QMainWindow):
         last_path = self.settings.load_last_project()
         if last_path: self.project_page.path_picker.setPath(last_path)
         for version in self.registry.versions():
+            enterprise = self.settings.load_enterprise_source(version)
+            if enterprise:
+                self.enterprise_sources[version] = enterprise
             selection = self.settings.load_source_selection(version)
             if not selection: continue
             if selection.mode is SourceMode.LOCAL_EXACT_SOURCE:
@@ -135,7 +140,7 @@ class MainWindow(QMainWindow):
     def _refresh_source_status(self, source: int, target: int) -> None:
         try: snapshots = self._source_status(source, target)
         except SourceManagerError: snapshots = None
-        self.project_page.set_source_requirements(source, target, snapshots, self.source_selections)
+        self.project_page.set_source_requirements(source, target, snapshots, self.source_selections, self.enterprise_sources)
 
     def _source_status(self, source: int, target: int):
         try:
@@ -151,6 +156,25 @@ class MainWindow(QMainWindow):
         try: snapshot = self.source_manager.resolve_selection(selection)
         except SourceManagerError as exc: self._show_error(str(exc)); return
         self.source_selections[version] = selection; self.settings.save_source_selection(selection, validated=True); self._refresh_source_cards(); self._log("Local Odoo source selected", version=version, path=snapshot.path, commit=snapshot.actual_commit or "unavailable")
+
+    def _choose_enterprise_source(self, version: int) -> None:
+        selected = QFileDialog.getExistingDirectory(self, f"Select Odoo {version} Enterprise addons folder")
+        if not selected:
+            return
+        try:
+            path = validate_addons_source(selected)
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+        self.enterprise_sources[version] = path
+        self.settings.save_enterprise_source(version, path)
+        self._refresh_source_cards()
+        self._log("Enterprise Odoo source selected", version=version, path=path)
+
+    def _forget_enterprise_source(self, version: int) -> None:
+        self.enterprise_sources.pop(version, None)
+        self.settings.forget_enterprise_source(version)
+        self._refresh_source_cards()
 
     def _choose_verified_source(self, version: int) -> None:
         selection = SourceSelection(version, SourceMode.VERIFIED_SNAPSHOT); self.source_selections[version] = selection; self.settings.save_source_selection(selection); self._refresh_source_cards()
@@ -201,14 +225,14 @@ class MainWindow(QMainWindow):
             except SourceManagerError as exc: self._show_error("Unable to inspect the selected Odoo sources.", str(exc)); return
             missing = [version for version, snapshot in snapshots.items() if snapshot is None]
         if missing and not self._confirm_source_download(missing): return
-        self._show_page(1, 1); self.analysis_page.set_context(source, target, root); self._start_task("analysis", lambda progress=None: self.analysis_service.analyze(root, source, target, progress=progress, source_selections=self.source_selections), (), self._analysis_done, self.analysis_page.set_busy)
+        self._show_page(1, 1); self.analysis_page.set_context(source, target, root); self._start_task("analysis", lambda progress=None: self.analysis_service.analyze(root, source, target, progress=progress, source_selections=self.source_selections, enterprise_sources=self.enterprise_sources), (), self._analysis_done, self.analysis_page.set_busy)
 
     def _analysis_done(self, token: int, result) -> None:
         if token != self.state.operation_token: return
         self.state.set_analysis(result); self.analysis_page.set_analysis(result); self.analysis_page.set_context(result.plan.source, result.plan.target, result.scan.root)
         snapshots = {step.source: step.source_snapshot for step in result.steps}
         if result.steps: snapshots[result.steps[-1].target] = result.steps[-1].target_snapshot
-        self.project_page.sources.set_versions(sorted(snapshots), snapshots, self.source_selections); self.analysis_page.details.set_project_root(result.scan.root); self._show_page(1, 2); self._log("Analysis completed", source=result.plan.source, target=result.plan.target, findings=len(result.findings))
+        self.project_page.sources.set_versions(sorted(snapshots), snapshots, self.source_selections, self.enterprise_sources); self.analysis_page.details.set_project_root(result.scan.root); self._show_page(1, 2); self._log("Analysis completed", source=result.plan.source, target=result.plan.target, findings=len(result.findings))
         self._auto_migrate_pending = bool(self._busy and self.project_page.autonomous_enabled() and not result.blockers)
         if self._auto_migrate_pending: self._log("Autonomous migration queued", output=self.project_page.selected_output())
 
