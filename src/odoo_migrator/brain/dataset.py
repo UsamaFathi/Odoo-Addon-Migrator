@@ -392,7 +392,17 @@ def build_method_dataset(
     positives = sum(sample.label == 1 for sample in rows)
     negatives = sum(sample.label == 0 for sample in rows)
 
-    if not validation and train:
-        validation = train[-max(1, len(train) // 5):]
-        train = train[:-len(validation)] or validation
+    if not validation and rows:
+        groups = sorted({sample.group for sample in rows})
+        if len(groups) > 1:
+            validation_group_count = max(1, len(groups) // 5)
+            validation_groups = set(groups[-validation_group_count:])
+            validation = tuple(sample for sample in rows if sample.group in validation_groups)
+            train = tuple(sample for sample in rows if sample.group not in validation_groups)
+        else:
+            # Tiny synthetic fixtures may contain only one decision group.
+            # Keep training possible, but the trainer will expose zero-coverage
+            # production metrics rather than treating this as independent holdout.
+            train = rows
+            validation = ()
     return Dataset(train, validation, positives, negatives)
