@@ -224,7 +224,38 @@ _XPATH_EXPR_ATTR = re.compile(
     r"(?P<prefix><xpath\b[^<>]*?\bexpr\s*=\s*)(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
     re.DOTALL,
 )
-_XPATH_TREE_NODE = re.compile(r"(?P<prefix>(?:^|/|::))tree(?=(?:/|\[|$))")
+def _rewrite_xpath_tree_nodes(expression: str) -> str:
+    output: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if quote:
+            output.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            output.append(char)
+            index += 1
+            continue
+        if expression.startswith("tree", index):
+            previous_ok = (
+                index == 0
+                or expression[index - 1] == "/"
+                or (index >= 2 and expression[index - 2:index] == "::")
+            )
+            end = index + 4
+            next_ok = end == len(expression) or expression[end] in {"/", "["}
+            if previous_ok and next_ok:
+                output.append("list")
+                index = end
+                continue
+        output.append(char)
+        index += 1
+    return "".join(output)
 
 
 def _xpath_tree_to_list_replacements(data: bytes) -> list[_Replacement]:
@@ -235,7 +266,7 @@ def _xpath_tree_to_list_replacements(data: bytes) -> list[_Replacement]:
     replacements: list[_Replacement] = []
     for match in _XPATH_EXPR_ATTR.finditer(text):
         expression = match.group("value")
-        rewritten = _XPATH_TREE_NODE.sub(lambda item: item.group("prefix") + "list", expression)
+        rewritten = _rewrite_xpath_tree_nodes(expression)
         if rewritten == expression:
             continue
         start_chars = match.start("value")
