@@ -88,6 +88,11 @@ def brain_build(
         "--enterprise",
         help="Optional local Enterprise repo/folder containing version branches or folders.",
     ),
+    history_repo: Path | None=typer.Option(
+        None,
+        "--history-repo",
+        help="Optional full Git repo with Odoo version branches for strong rename supervision.",
+    ),
 ):
     """Train once from official source and write a reusable .omb brain pack."""
     trainer = BrainTrainer()
@@ -98,6 +103,7 @@ def brain_build(
                 source=source,
                 target=target,
                 enterprise_root=enterprise,
+                history_repo=history_repo,
             )
     except (ValueError, SourceManagerError) as exc:
         console.print(f"[red]{_terminal_text(exc)}[/red]")
@@ -108,6 +114,11 @@ def brain_build(
     console.print(f"Model renames learned: {result.model_renames}")
     console.print(f"Dependency renames learned: {result.dependency_renames}")
     console.print(f"Field renames learned: {result.field_renames}")
+    console.print(f"XML ID renames learned: {result.xml_id_renames}")
+    console.print(f"JS module renames learned: {result.js_module_renames}")
+    console.print(f"Asset bundle renames learned: {result.asset_bundle_renames}")
+    console.print(f"Signature adapters learned: {result.signature_adapters}")
+    console.print("[bold]Production decision metrics[/bold]")
     console.print_json(json.dumps(result.validation_metrics))
 
 
@@ -132,7 +143,9 @@ def brain_info(path: Path):
     console.print(f"[bold]Brain fingerprint:[/bold] {brain.fingerprint}")
     console.print(f"[bold]Range:[/bold] Odoo {brain.source} -> {brain.target}")
     console.print(table)
-    console.print("[bold]Validation metrics[/bold]")
+    console.print("[bold]Production decision metrics[/bold]")
+    console.print_json(json.dumps(payload.get("training", {}).get("production_validation", {})))
+    console.print("[bold]Baseline classifier metrics (threshold 0.5)[/bold]")
     console.print_json(json.dumps(payload.get("training", {}).get("validation", {})))
     console.print(f"Enterprise knowledge: {len(payload.get('training', {}).get('enterprise_versions', []))} version(s)")
     for version, identity in sorted(brain.source_identities.items(), key=lambda item: int(item[0])):
