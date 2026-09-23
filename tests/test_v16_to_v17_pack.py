@@ -259,7 +259,12 @@ def test_application_16_to_17_preserves_original_and_metadata(tmp_path: Path):
     analysis = AnalysisService().analyze(custom, 16, 17, manager=_Manager(roots))
     assert analysis.auto_fix_candidates[0].rule_id == "manifest.version.16_to_17"
     assert all(item.migration_step == "16_to_17" for item in analysis.findings if item.rule_id)
-    assert any(item.code == "xml.view_modifier.legacy_attribute" for item in analysis.findings)
+    assert not any(item.code == "xml.view_modifier.legacy_attribute" for item in analysis.findings)
+    assert any(item.code == "xml.view_modifier.legacy_attribute" for item in analysis.resolved_findings)
+    assert any(
+        item.rule_id == "xml.modifiers.attrs_states_to_inline.16_to_17"
+        for item in analysis.auto_fix_candidates
+    )
     assert any(item.code == "frontend.legacy_dependency.removed" for item in analysis.findings)
     output = tmp_path / "output"
     result = MigrationService().migrate(custom, output, analysis)
