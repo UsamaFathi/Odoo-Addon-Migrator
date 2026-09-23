@@ -10,7 +10,13 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QFrame, QH
 
 from odoo_migrator import __version__
 from odoo_migrator.application.services import AnalysisService, MigrationService, ProjectScanService
-from odoo_migrator.brain import BrainPack, BrainRuntimeMigrator, BrainTrainer
+from odoo_migrator.brain import (
+    BrainBundle,
+    BrainPack,
+    BrainRuntimeMigrator,
+    BrainTrainer,
+    EnterpriseOverlayTrainer,
+)
 from odoo_migrator.migrations.registry import default_registry
 from odoo_migrator.sources.manager import SourceManager, SourceManagerError
 from odoo_migrator.sources.registry import SourceMode, SourceSelection
@@ -78,6 +84,8 @@ class MainWindow(QMainWindow):
         self.enterprise_sources: dict[int, Path] = {}
         self.brain_path: Path | None = None
         self.brain_pack: BrainPack | None = None
+        self.brain_overlay_path: Path | None = None
+        self.brain_overlay_pack: BrainPack | None = None
         self._thread: QThread | None = None; self._worker: TaskWorker | None = None; self._busy = False; self._task_name: str | None = None; self._task_success_callback = None; self._task_busy_callback = None; self._auto_migrate_pending = False; self._log_dir = configure_logging()
         if settings is None:
             self.settings = DesktopSettings()
@@ -106,6 +114,7 @@ class MainWindow(QMainWindow):
         self.analysis_page.backRequested.connect(lambda: self._show_page(0, 0)); self.analysis_page.migrateRequested.connect(self._migrate); self.results_page.openOutputRequested.connect(self._open_output); self.results_page.openReportRequested.connect(self._open_report); self.results_page.openDiffRequested.connect(self._open_diff); self.results_page.newProjectRequested.connect(self._new_project); self.analysis_page.details.openLocation.connect(self._open_finding_location)
         self.project_page.localSourceRequested.connect(self._choose_local_source); self.project_page.downloadSourceRequested.connect(self._choose_verified_source); self.project_page.forgetSourceRequested.connect(self._forget_source); self.project_page.enterpriseSourceRequested.connect(self._choose_enterprise_source); self.project_page.enterpriseForgetRequested.connect(self._forget_enterprise_source)
         self.project_page.brainBuildRequested.connect(self._build_brain); self.project_page.brainSelectRequested.connect(self._select_brain); self.project_page.brainForgetRequested.connect(self._forget_brain)
+        self.project_page.brainOverlayBuildRequested.connect(self._build_brain_overlay); self.project_page.brainOverlaySelectRequested.connect(self._select_brain_overlay); self.project_page.brainOverlayForgetRequested.connect(self._forget_brain_overlay)
 
     def _restore_settings(self) -> None:
         geometry = self.settings.load_geometry()
@@ -128,6 +137,12 @@ class MainWindow(QMainWindow):
                 self._activate_brain(brain_path)
             except ValueError:
                 self.settings.forget_brain_path()
+        overlay_path = self.settings.load_brain_overlay_path()
+        if overlay_path and self.brain_pack is not None:
+            try:
+                self._activate_brain_overlay(overlay_path)
+            except ValueError:
+                self.settings.forget_brain_overlay_path()
 
     def closeEvent(self, event) -> None:
         if self._thread and self._thread.isRunning(): self._thread.quit(); self._thread.wait(5000)
@@ -162,6 +177,13 @@ class MainWindow(QMainWindow):
 
     def _activate_brain(self, path: Path) -> None:
         pack = BrainPack.load(path)
+        if pack.pack_kind == "enterprise_overlay":
+            raise ValueError("Select the Community Brain first, then add this Enterprise overlay.")
+        if self.brain_overlay_pack is not None:
+            try:
+                BrainBundle(pack, self.brain_overlay_pack)
+            except ValueError:
+                self._forget_brain_overlay()
         self.brain_path = Path(path).resolve()
         self.brain_pack = pack
         self.settings.save_brain_path(self.brain_path)
@@ -171,6 +193,20 @@ class MainWindow(QMainWindow):
             target=pack.target,
             fingerprint=pack.fingerprint,
             training=pack.training,
+            allow_overlay=pack.pack_kind == "community",
+        )
+
+    def _activate_brain_overlay(self, path: Path) -> None:
+        if self.brain_pack is None:
+            raise ValueError("Select a Community Brain before selecting an Enterprise overlay.")
+        overlay = BrainPack.load(path)
+        BrainBundle(self.brain_pack, overlay)
+        self.brain_overlay_path = Path(path).resolve()
+        self.brain_overlay_pack = overlay
+        self.settings.save_brain_overlay_path(self.brain_overlay_path)
+        self.project_page.set_brain_overlay(
+            self.brain_overlay_path,
+            fingerprint=overlay.fingerprint,
         )
 
     def _select_brain(self) -> None:
@@ -188,34 +224,36 @@ class MainWindow(QMainWindow):
             self._show_error("Invalid Migration Brain pack.", str(exc))
 
     def _forget_brain(self) -> None:
+        self._forget_brain_overlay()
         self.brain_path = None
         self.brain_pack = None
         self.settings.forget_brain_path()
         self.project_page.set_brain(None)
 
+    def _select_brain_overlay(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select local Enterprise Brain overlay",
+            str(Path.home()),
+            "Migration Brain (*.omb)",
+        )
+        if not selected:
+            return
+        try:
+            self._activate_brain_overlay(Path(selected))
+        except ValueError as exc:
+            self._show_error("Invalid Enterprise Brain overlay.", str(exc))
+
+    def _forget_brain_overlay(self) -> None:
+        self.brain_overlay_path = None
+        self.brain_overlay_pack = None
+        self.settings.forget_brain_overlay_path()
+        self.project_page.set_brain_overlay(None)
+
     def _build_brain(self) -> None:
         default_output = Path.home() / ".odoo-addon-migrator" / "brain" / "migration_brain.omb"
-        required_versions = tuple(self.registry.versions())
-        configured_enterprise = {
-            version: Path(path).resolve()
-            for version, path in self.enterprise_sources.items()
-            if version in required_versions
-        }
-        has_complete_per_version_sources = all(
-            version in configured_enterprise for version in required_versions
-        )
-
-        enterprise_root = None
-        enterprise_roots = configured_enterprise if has_complete_per_version_sources else None
-        if enterprise_roots is None:
-            selected = QFileDialog.getExistingDirectory(
-                self,
-                "Select Enterprise repository/root for Odoo 14–19 (Cancel for Community-only Brain)",
-            )
-            enterprise_root = Path(selected).resolve() if selected else None
-
         trainer = BrainTrainer(source_manager=self.source_manager, registry=self.registry)
-        self.project_page.brain_status.setText("Building Migration Brain…")
+        self.project_page.brain_status.setText("Building Community Migration Brain…")
         self.project_page.brain_status.set_role("badgeInfo")
         self._start_task(
             "brain-training",
@@ -223,9 +261,6 @@ class MainWindow(QMainWindow):
                 default_output,
                 source=min(self.registry.versions()),
                 target=max(self.registry.versions()),
-                enterprise_root=enterprise_root,
-                enterprise_roots=enterprise_roots,
-                history_repo=enterprise_root if enterprise_root and (enterprise_root / ".git").exists() else None,
                 progress=progress,
             ),
             (),
@@ -263,6 +298,83 @@ class MainWindow(QMainWindow):
             ),
         )
 
+    def _build_brain_overlay(self) -> None:
+        if self.brain_pack is None or self.brain_path is None:
+            self._show_error("Build or select a Community Migration Brain first.")
+            return
+        if self.brain_pack.pack_kind != "community":
+            self._show_error("Enterprise overlays require a Community-only base Brain.")
+            return
+        required_versions = tuple(
+            range(self.brain_pack.source, self.brain_pack.target + 1)
+        )
+        configured = {
+            version: Path(path).resolve()
+            for version, path in self.enterprise_sources.items()
+            if version in required_versions
+        }
+        enterprise_root = None
+        enterprise_roots = (
+            configured
+            if all(version in configured for version in required_versions)
+            else None
+        )
+        if enterprise_roots is None:
+            selected = QFileDialog.getExistingDirectory(
+                self,
+                "Select authorized Enterprise repository/root for all Brain versions",
+            )
+            if not selected:
+                return
+            enterprise_root = Path(selected).resolve()
+
+        output = Path.home() / ".odoo-addon-migrator" / "brain" / "enterprise_overlay.omb"
+        trainer = EnterpriseOverlayTrainer(
+            source_manager=self.source_manager,
+            registry=self.registry,
+        )
+        self.project_page.brain_overlay_status.setText("Building Enterprise overlay…")
+        self.project_page.brain_overlay_status.set_role("badgeInfo")
+        self._start_task(
+            "brain-training",
+            lambda progress=None: trainer.build(
+                self.brain_pack,
+                output,
+                enterprise_root=enterprise_root,
+                enterprise_roots=enterprise_roots,
+                history_repo=(
+                    enterprise_root
+                    if enterprise_root and (enterprise_root / ".git").exists()
+                    else None
+                ),
+                progress=progress,
+            ),
+            (),
+            self._brain_overlay_build_done,
+            self.project_page.set_brain_busy,
+        )
+
+    def _brain_overlay_build_done(self, token: int, result) -> None:
+        if token != self.state.operation_token:
+            return
+        self._activate_brain_overlay(result.output)
+        self._log(
+            "Enterprise Brain overlay trained",
+            output=result.output,
+            base_fingerprint=result.pack.base_fingerprint,
+            overlay_fingerprint=result.pack.fingerprint,
+        )
+        QMessageBox.information(
+            self,
+            "Enterprise overlay ready",
+            (
+                "The local Enterprise overlay was created successfully.\n\n"
+                f"{result.output}\n\n"
+                "It is bound to the selected Community Brain and marked for local "
+                "authorized use only. No Enterprise source files are embedded."
+            ),
+        )
+
     def _brain_migrate(self, root: Path, source: int, target: int) -> None:
         if self.brain_pack is None or self.brain_path is None:
             self._show_error("Select or build a Migration Brain first.")
@@ -276,7 +388,11 @@ class MainWindow(QMainWindow):
         if output.exists():
             self._show_error("The selected output directory already exists. Choose a different destination.")
             return
-        runtime = BrainRuntimeMigrator(self.brain_pack, registry=self.registry)
+        runtime = BrainRuntimeMigrator(
+            self.brain_pack,
+            overlay=self.brain_overlay_pack,
+            registry=self.registry,
+        )
         self.state.set_output_root(output)
         self._show_page(2, 3)
         self.migration_page.set_destination(output)

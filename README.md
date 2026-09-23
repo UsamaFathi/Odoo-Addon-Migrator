@@ -28,6 +28,37 @@ Each required Odoo version can use either a verified downloaded snapshot or a us
 
 Automatic changes are intentionally conservative. Blockers stop migration, while review-required findings remain visible for human decisions. The generated output contains `.odoo_migrator_run.json`, `migration_report.html`, and `migration.diff`.
 
+## Migration Brain
+
+Migration Brain separates expensive Odoo-source research from normal addon
+migrations. A public Community Brain can be trained once and reused without
+Odoo source at runtime. Users with an authorized local Enterprise checkout can
+train a separate local Enterprise overlay; it is bound to the exact Community
+Brain fingerprint and is labelled for local authorized use only. Neither pack
+contains Odoo source files or raw training examples.
+
+```powershell
+# Redistributable Community-only Brain
+odoo-migrator brain build --from 14 --to 19 --output .\migration_brain.omb
+
+# Optional local Enterprise knowledge
+odoo-migrator brain build-enterprise-overlay `
+  --base .\migration_brain.omb `
+  --enterprise D:\Sources\odoo-enterprise `
+  --output .\enterprise_overlay.omb
+
+# Source-free runtime
+odoo-migrator brain migrate .\custom_addons .\custom_addons_19 `
+  --brain .\migration_brain.omb `
+  --overlay .\enterprise_overlay.omb --from 16 --to 19
+```
+
+The learned component ranks source-backed API candidates. It does not generate
+arbitrary Python: only high-confidence decisions that pass deterministic
+AST/XML transformation guards are applied. Ambiguous decisions remain in the
+report. See [MIGRATION_BRAIN.md](MIGRATION_BRAIN.md) for the architecture,
+metrics, and safety boundaries.
+
 ## Developer setup
 
 ```bash

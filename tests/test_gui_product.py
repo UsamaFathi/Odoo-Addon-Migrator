@@ -27,6 +27,8 @@ from odoo_migrator.ui.pages.results import ResultsPage
 from odoo_migrator.ui.widgets.finding_details import FindingDetails
 from odoo_migrator.ui.widgets.source_status import SourceStatus
 from odoo_migrator.application.services import AnalysisService, MigrationService
+from odoo_migrator.brain.pack import BrainPack, new_brain_payload
+from odoo_migrator.brain.ranker import LogisticRanker
 from odoo_migrator.sources.registry import SourceMode, SourceSelection, SourceSnapshot
 from odoo_migrator.sources.enterprise import EnterpriseSourceError
 import odoo_migrator.ui.main_window as main_window_module
@@ -648,3 +650,94 @@ def test_clean_analysis_queues_autonomous_migration_only_while_analysis_task_is_
     window._auto_migrate_pending = False
     window._busy = False
     window.close()
+
+
+def _saved_brain(path: Path, *, kind: str = "community",
+                 base_fingerprint: str | None = None) -> BrainPack:
+    payload = new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={
+            "18_to_19": {
+                "source": 18,
+                "target": 19,
+                "automatic_rules": [],
+            }
+        },
+        training={"validation": {}},
+        source_identities={},
+        pack_kind=kind,
+        base_fingerprint=base_fingerprint,
+        source_leakage_audit=(
+            {"status": "passed", "files_scanned": 1, "fragments_checked": 1}
+            if kind != "community"
+            else None
+        ),
+    )
+    return BrainPack.load(BrainPack(payload).save(path))
+
+
+def test_desktop_restores_compatible_enterprise_brain_overlay(qapp, tmp_path: Path):
+    settings = settings_module.DesktopSettings(
+        QSettings(str(tmp_path / "brain.ini"), QSettings.IniFormat)
+    )
+    base = _saved_brain(tmp_path / "community.omb")
+    overlay = _saved_brain(
+        tmp_path / "enterprise-overlay.omb",
+        kind="enterprise_overlay",
+        base_fingerprint=base.fingerprint,
+    )
+    settings.save_brain_path(tmp_path / "community.omb")
+    settings.save_brain_overlay_path(tmp_path / "enterprise-overlay.omb")
+
+    window = MainWindow(settings=settings)
+
+    assert window.brain_pack is not None
+    assert window.brain_overlay_pack is not None
+    assert window.brain_overlay_pack.fingerprint == overlay.fingerprint
+    assert window.project_page.brain_overlay_status.text() == "Enterprise overlay ready"
+    window.close()
+
+
+def test_desktop_rejects_overlay_for_different_community_brain(qapp, tmp_path: Path):
+    settings = settings_module.DesktopSettings(
+        QSettings(str(tmp_path / "brain-mismatch.ini"), QSettings.IniFormat)
+    )
+    expected_base = _saved_brain(tmp_path / "expected-community.omb")
+    selected_base = _saved_brain(tmp_path / "selected-community.omb")
+    overlay = _saved_brain(
+        tmp_path / "enterprise-overlay.omb",
+        kind="enterprise_overlay",
+        base_fingerprint=expected_base.fingerprint,
+    )
+    settings.save_brain_path(tmp_path / "selected-community.omb")
+    settings.save_brain_overlay_path(tmp_path / "enterprise-overlay.omb")
+
+    window = MainWindow(settings=settings)
+
+    assert selected_base.fingerprint != expected_base.fingerprint
+    assert overlay.base_fingerprint == expected_base.fingerprint
+    assert window.brain_pack is not None
+    assert window.brain_overlay_pack is None
+    assert settings.load_brain_overlay_path() is None
+    window.close()
+
+
+def test_enterprise_composite_brain_never_enables_overlay_controls(qapp, tmp_path: Path):
+    page = ProjectPage()
+    page.set_brain(
+        tmp_path / "legacy-enterprise.omb",
+        source=18,
+        target=19,
+        fingerprint="a" * 64,
+        training={"enterprise_versions": [18, 19]},
+        allow_overlay=False,
+    )
+
+    page.set_brain_busy(True)
+    page.set_brain_busy(False)
+
+    assert not page.brain_overlay_build_button.isEnabled()
+    assert not page.brain_overlay_select_button.isEnabled()
+    page.close()

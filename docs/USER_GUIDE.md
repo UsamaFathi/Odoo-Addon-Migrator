@@ -1,5 +1,20 @@
 # User guide
 
+## Migration Brain mode
+
+Normal users can select a Community `migration_brain.omb` on the Project page
+and migrate without configuring or downloading Odoo source. The Brain card
+shows its supported range, fingerprint, measured training metrics, and whether
+it contains Community-only knowledge.
+
+If you are licensed to access Odoo Enterprise source, use the advanced **Build
+Enterprise overlay** action once on the machine that holds the authorized local
+checkouts. The resulting overlay is tied to the selected Community Brain. Once
+training completes, the source directories are not needed for normal runtime;
+select the base and optional overlay and enable **Use Migration Brain runtime**.
+Do not distribute an Enterprise overlay unless your license explicitly allows
+that distribution.
+
 1. Open Odoo Addon Migrator and select the folder containing custom addons. A folder can be dragged onto the picker.
 2. Let the local scan finish. Review addon counts, file statistics, dependencies, and manifest version agreement.
 3. Choose a source version if manifests are mixed or unknown. Targets are supplied by the migration-pack registry and are always higher than the source.

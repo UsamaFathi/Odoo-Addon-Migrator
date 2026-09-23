@@ -94,6 +94,8 @@ python -m pytest -q
 python -m odoo_migrator plan --from 16 --to 18
 python -m odoo_migrator brain info .\migration_brain.omb
 python -m odoo_migrator brain migrate ADDONS OUTPUT --brain .\migration_brain.omb --from 16 --to 18
+python -m odoo_migrator brain build-enterprise-overlay --base .\migration_brain.omb --enterprise D:\Sources\odoo-enterprise --output .\enterprise_overlay.omb
+python -m odoo_migrator brain migrate ADDONS OUTPUT --brain .\migration_brain.omb --overlay .\enterprise_overlay.omb --from 16 --to 18
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1
 ```
@@ -116,12 +118,18 @@ Migration Brain invariants:
   fingerprints the original project. The input project is never modified.
 - A `.omb` pack contains derived knowledge and model parameters only, never
   source file contents.
+- Public/release Brain packs are Community-only. Enterprise knowledge is built
+  by an authorized user as a separate local-only overlay bound to the exact
+  Community Brain fingerprint. Do not commit, upload, or redistribute an
+  Enterprise overlay unless its licensing terms explicitly permit that use.
 
 
 ## Migration Brain hardening rules
 
-- Brain schema v3 is allow-listed. New knowledge types require an explicit
+- Brain schema v4 is allow-listed. New knowledge types require an explicit
   schema change and tests; arbitrary payload keys must never be serialized.
+- Enterprise schema-v4 packs must pass the source-leakage audit before write,
+  declare `local_authorized_use_only`, and reject a mismatched Community base.
 - Report production decision metrics at the same calibrated threshold/margin
   used for automatic method mappings. Baseline classifier accuracy at 0.5 is
   diagnostic only and must not be presented as auto-fix accuracy.

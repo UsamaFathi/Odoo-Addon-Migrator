@@ -57,6 +57,9 @@ class ProjectPage(QWidget):
     brainBuildRequested = Signal()
     brainSelectRequested = Signal()
     brainForgetRequested = Signal()
+    brainOverlayBuildRequested = Signal()
+    brainOverlaySelectRequested = Signal()
+    brainOverlayForgetRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,6 +100,20 @@ class ProjectPage(QWidget):
         self.brain_select_button.setObjectName("secondary"); self.brain_select_button.clicked.connect(self.brainSelectRequested)
         self.brain_forget_button = QPushButton("Forget Brain")
         self.brain_forget_button.setObjectName("secondary"); self.brain_forget_button.clicked.connect(self.brainForgetRequested); self.brain_forget_button.hide()
+        self.brain_overlay_status = StatusBadge("Enterprise overlay not configured", "badgeInfo")
+        self.brain_overlay_path = QLabel(
+            "Optional local-only knowledge built from an authorized Enterprise checkout."
+        )
+        self.brain_overlay_path.setObjectName("muted"); self.brain_overlay_path.setWordWrap(True)
+        self.brain_overlay_build_button = QPushButton("Build Enterprise overlay")
+        self.brain_overlay_build_button.setObjectName("secondary"); self.brain_overlay_build_button.clicked.connect(self.brainOverlayBuildRequested)
+        self.brain_overlay_build_button.setEnabled(False)
+        self.brain_overlay_select_button = QPushButton("Use existing overlay")
+        self.brain_overlay_select_button.setObjectName("secondary"); self.brain_overlay_select_button.clicked.connect(self.brainOverlaySelectRequested)
+        self.brain_overlay_select_button.setEnabled(False)
+        self.brain_overlay_forget_button = QPushButton("Forget overlay")
+        self.brain_overlay_forget_button.setObjectName("secondary"); self.brain_overlay_forget_button.clicked.connect(self.brainOverlayForgetRequested); self.brain_overlay_forget_button.hide()
+        self._brain_accepts_overlay = False
         self.autonomous_mode = QCheckBox("Continue automatically when blockers are resolved"); self.autonomous_mode.setChecked(True)
         self.autonomous_mode.setToolTip("When enabled, a clean autonomous analysis continues directly into migration.")
         self.analyze_button = QPushButton("Analyze & auto-resolve  →"); self.analyze_button.clicked.connect(self.analyzeRequested); self.analyze_button.setEnabled(False)
@@ -132,6 +149,8 @@ class ProjectPage(QWidget):
         brain_title = QLabel("Migration Brain"); brain_title.setObjectName("sectionTitle"); brain_layout.addWidget(brain_title)
         brain_layout.addWidget(self.brain_status); brain_layout.addWidget(self.brain_path); brain_layout.addWidget(self.brain_progress); brain_layout.addWidget(self.brain_mode)
         brain_actions = QHBoxLayout(); brain_actions.addWidget(self.brain_build_button); brain_actions.addWidget(self.brain_select_button); brain_actions.addWidget(self.brain_forget_button); brain_actions.addStretch(); brain_layout.addLayout(brain_actions)
+        brain_layout.addWidget(self.brain_overlay_status); brain_layout.addWidget(self.brain_overlay_path)
+        overlay_actions = QHBoxLayout(); overlay_actions.addWidget(self.brain_overlay_build_button); overlay_actions.addWidget(self.brain_overlay_select_button); overlay_actions.addWidget(self.brain_overlay_forget_button); overlay_actions.addStretch(); brain_layout.addLayout(overlay_actions)
         main.addWidget(brain_card, 0)
         table_header = QHBoxLayout(); title = QLabel("Detected addons"); title.setObjectName("sectionTitle"); table_header.addWidget(title); table_header.addStretch(); table_header.addWidget(self.module_search); main.addLayout(table_header, 0)
         main.addWidget(self.modules, 1)
@@ -174,14 +193,18 @@ class ProjectPage(QWidget):
 
     def set_brain(self, path: Path | None, *, source: int | None = None,
                   target: int | None = None, fingerprint: str | None = None,
-                  training: dict | None = None) -> None:
+                  training: dict | None = None,
+                  allow_overlay: bool = True) -> None:
         if path is None:
+            self._brain_accepts_overlay = False
             self.brain_status.setText("Migration Brain not configured")
             self.brain_status.set_role("badgeInfo")
             self.brain_path.setText("Train once from Odoo source, then migrate custom addons without source indexing.")
             self.brain_path.setToolTip("")
             self.brain_mode.setChecked(False); self.brain_mode.setEnabled(False)
             self.brain_forget_button.hide()
+            self.brain_overlay_build_button.setEnabled(False)
+            self.brain_overlay_select_button.setEnabled(False)
             self._brain_mode_changed(False)
             return
         self.brain_status.setText("Migration Brain ready")
@@ -204,6 +227,28 @@ class ProjectPage(QWidget):
         self.brain_path.setToolTip(str(path))
         self.brain_mode.setEnabled(True)
         self.brain_forget_button.show()
+        self._brain_accepts_overlay = allow_overlay
+        self.brain_overlay_build_button.setEnabled(allow_overlay)
+        self.brain_overlay_select_button.setEnabled(allow_overlay)
+
+    def set_brain_overlay(self, path: Path | None, *, fingerprint: str | None = None) -> None:
+        if path is None:
+            self.brain_overlay_status.setText("Enterprise overlay not configured")
+            self.brain_overlay_status.set_role("badgeInfo")
+            self.brain_overlay_path.setText(
+                "Optional local-only knowledge built from an authorized Enterprise checkout."
+            )
+            self.brain_overlay_path.setToolTip("")
+            self.brain_overlay_forget_button.hide()
+            return
+        self.brain_overlay_status.setText("Enterprise overlay ready")
+        self.brain_overlay_status.set_role("badgeSuccess")
+        suffix = f"\nFingerprint: {fingerprint[:12]}…" if fingerprint else ""
+        self.brain_overlay_path.setText(
+            f"Local authorized use only\n{path}{suffix}"
+        )
+        self.brain_overlay_path.setToolTip(str(path))
+        self.brain_overlay_forget_button.show()
 
     def set_brain_progress(self, stage: str, percent: int) -> None:
         self.brain_progress.show()
@@ -216,6 +261,10 @@ class ProjectPage(QWidget):
         self.brain_build_button.setEnabled(not busy)
         self.brain_select_button.setEnabled(not busy)
         self.brain_forget_button.setEnabled(not busy)
+        can_use_overlay = self._brain_accepts_overlay and bool(self.brain_path.toolTip())
+        self.brain_overlay_build_button.setEnabled(not busy and can_use_overlay)
+        self.brain_overlay_select_button.setEnabled(not busy and can_use_overlay)
+        self.brain_overlay_forget_button.setEnabled(not busy)
         self.brain_mode.setEnabled(not busy and bool(self.brain_path.toolTip()))
         if busy:
             self.brain_progress.setValue(0)

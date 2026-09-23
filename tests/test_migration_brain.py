@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from odoo_migrator.brain.pack import BrainPack, new_brain_payload
+from odoo_migrator.brain.audit import assert_no_source_leakage
+from odoo_migrator.brain.overlay import BrainBundle, EnterpriseOverlayTrainer
 from odoo_migrator.brain.ranker import LogisticRanker, RankedExample
 from odoo_migrator.brain.runtime import BrainRuntimeMigrator
 from odoo_migrator.brain.trainer import BrainTrainer
@@ -179,6 +181,9 @@ def test_brain_trainer_builds_pack_from_source_once(tmp_path: Path):
     assert result.training_samples > 0
     assert result.pack.payload["training"]["dataset"]["positives"] > 0
     assert result.pack.payload["training"]["dataset"]["negatives"] > 0
+    assert result.pack.pack_kind == "community"
+    assert result.pack.enterprise_knowledge is False
+    assert result.pack.distribution_policy == "public_community"
 
 
 def test_brain_trainer_reports_dataset_progress_beyond_fifty_percent(tmp_path: Path):
@@ -298,6 +303,165 @@ def test_brain_trainer_composes_per_version_enterprise_knowledge(tmp_path: Path)
     assert result.pack.training["enterprise_versions"] == [18, 19]
     assert result.pack.source_identities["18"]["enterprise"] is True
     assert result.pack.source_identities["19"]["enterprise"] is True
+    assert result.pack.pack_kind == "enterprise_composite"
+    assert result.pack.distribution_policy == "local_authorized_use_only"
+    assert result.pack.payload["source_leakage_audit"]["status"] == "passed"
+
+
+def test_enterprise_overlay_is_bound_to_community_brain_and_contains_no_source(tmp_path: Path):
+    community18 = tmp_path / "community18"
+    community19 = tmp_path / "community19"
+    enterprise18 = tmp_path / "enterprise18"
+    enterprise19 = tmp_path / "enterprise19"
+    _addon(community18, "demo_core", 18, model="demo.model")
+    _addon(community19, "demo_core", 19, model="demo.model")
+    enterprise_module = _addon(
+        enterprise18, "account_reports", 18, model="account.report"
+    )
+    _addon(enterprise19, "account_reports", 19, model="account.report")
+    secret = (
+        "ENTERPRISE_PRIVATE_IMPLEMENTATION_MARKER_"
+        "this_line_must_never_be_embedded_in_the_overlay_payload"
+    )
+    (enterprise_module / "private.py").write_text(
+        f"PRIVATE_MARKER = {secret!r}\n",
+        encoding="utf-8",
+    )
+    manager = _Manager({18: community18, 19: community19})
+    base = BrainTrainer(source_manager=manager).build(
+        tmp_path / "community.omb", source=18, target=19
+    ).pack
+
+    result = EnterpriseOverlayTrainer(source_manager=manager).build(
+        base,
+        tmp_path / "enterprise-overlay.omb",
+        enterprise_roots={18: enterprise18, 19: enterprise19},
+    )
+
+    overlay = result.pack
+    assert overlay.pack_kind == "enterprise_overlay"
+    assert overlay.base_fingerprint == base.fingerprint
+    assert overlay.enterprise_knowledge is True
+    assert overlay.distribution_policy == "local_authorized_use_only"
+    assert overlay.payload["source_leakage_audit"]["status"] == "passed"
+    assert overlay.payload["source_leakage_audit"]["files_scanned"] > 0
+    assert secret not in json.dumps(overlay.payload)
+    assert BrainBundle(base, overlay).enterprise_knowledge is True
+
+
+def test_enterprise_overlay_rejects_wrong_community_brain(tmp_path: Path):
+    base_payload = new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {"source": 18, "target": 19, "automatic_rules": []}},
+        training={"validation": {}},
+        source_identities={},
+    )
+    base = BrainPack.load(BrainPack(base_payload).save(tmp_path / "base.omb"))
+    other_payload = new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {"source": 18, "target": 19, "automatic_rules": []}},
+        training={"validation": {"precision": 0.5}},
+        source_identities={},
+    )
+    other = BrainPack.load(BrainPack(other_payload).save(tmp_path / "other.omb"))
+    overlay_payload = new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {"source": 18, "target": 19, "automatic_rules": []}},
+        training={"validation": {}, "enterprise_versions": [18, 19]},
+        source_identities={},
+        pack_kind="enterprise_overlay",
+        base_fingerprint=base.fingerprint,
+        source_leakage_audit={
+            "status": "passed",
+            "files_scanned": 1,
+            "fragments_checked": 1,
+        },
+    )
+    overlay = BrainPack.load(
+        BrainPack(overlay_payload).save(tmp_path / "overlay.omb")
+    )
+
+    with pytest.raises(ValueError, match="different Community Brain"):
+        BrainBundle(other, overlay)
+
+
+def test_enterprise_overlay_runtime_needs_no_training_sources(tmp_path: Path):
+    community18 = tmp_path / "community18"
+    community19 = tmp_path / "community19"
+    enterprise18 = tmp_path / "enterprise18"
+    enterprise19 = tmp_path / "enterprise19"
+    _addon(community18, "demo_core", 18, model="demo.model")
+    _addon(community19, "demo_core", 19, model="demo.model")
+    _addon(enterprise18, "account_reports", 18, model="account.report")
+    _addon(enterprise19, "account_reports", 19, model="account.report")
+    manager = _Manager({18: community18, 19: community19})
+    base = BrainTrainer(source_manager=manager).build(
+        tmp_path / "base.omb", source=18, target=19
+    ).pack
+    overlay = EnterpriseOverlayTrainer(source_manager=manager).build(
+        base,
+        tmp_path / "overlay.omb",
+        enterprise_roots={18: enterprise18, 19: enterprise19},
+    ).pack
+    custom = tmp_path / "custom"
+    _addon(custom, "custom_sale", 18, model="sale.order")
+    before = SourceIndexer.project_fingerprint(custom)
+    shutil.rmtree(community18)
+    shutil.rmtree(community19)
+    shutil.rmtree(enterprise18)
+    shutil.rmtree(enterprise19)
+
+    result = BrainRuntimeMigrator(base, overlay=overlay).migrate(
+        custom,
+        tmp_path / "migrated",
+        source=18,
+        target=19,
+    )
+
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["source_code_indexed_at_runtime"] is False
+    assert metadata["enterprise_knowledge"] is True
+    assert metadata["brain_components"] == {
+        "community": base.fingerprint,
+        "enterprise_overlay": overlay.fingerprint,
+    }
+    assert SourceIndexer.project_fingerprint(custom) == before
+
+
+def test_source_leakage_audit_rejects_verbatim_enterprise_fragment(tmp_path: Path):
+    enterprise = tmp_path / "enterprise"
+    enterprise.mkdir()
+    source_line = (
+        "def private_enterprise_algorithm(self, records): return "
+        "self._perform_confidential_enterprise_calculation(records)"
+    )
+    (enterprise / "private.py").write_text(source_line + "\n", encoding="utf-8")
+    payload = {"description": source_line}
+
+    with pytest.raises(ValueError, match="source leakage audit failed"):
+        assert_no_source_leakage(payload, [enterprise])
+
+
+def test_enterprise_pack_cannot_be_saved_without_completed_leakage_audit(tmp_path: Path):
+    payload = new_brain_payload(
+        source=18,
+        target=19,
+        ranker=LogisticRanker(),
+        steps={"18_to_19": {"source": 18, "target": 19, "automatic_rules": []}},
+        training={"validation": {}, "enterprise_versions": [18, 19]},
+        source_identities={},
+        pack_kind="enterprise_overlay",
+        base_fingerprint="a" * 64,
+    )
+
+    with pytest.raises(ValueError, match="source leakage audit did not pass"):
+        BrainPack(payload).save(tmp_path / "unaudited-overlay.omb")
 
 
 def test_brain_runtime_migrates_without_odoo_source(tmp_path: Path):

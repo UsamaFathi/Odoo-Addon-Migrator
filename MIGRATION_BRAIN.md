@@ -5,16 +5,23 @@ Migrator.  It separates expensive official-source research from normal addon
 migrations:
 
 ```text
-TRAINING (developer/advanced operation)
-Community 14..19 + authorized local Enterprise
+PUBLIC TRAINING (developer/release operation)
+Community 14..19
     -> source indexes
     -> adjacent SourceDiff summaries
     -> grouped semantic dataset
     -> deterministic mappings + trained ranker
     -> migration_brain.omb
 
+LOCAL ENTERPRISE TRAINING (authorized user operation)
+migration_brain.omb + authorized local Enterprise 14..19
+    -> composite source indexes and adjacent semantic diffs
+    -> leakage audit
+    -> base-bound enterprise_overlay.omb
+
 RUNTIME (normal operation)
 custom addons + source/target + migration_brain.omb
+    + optional enterprise_overlay.omb
     -> custom-addon index only
     -> deterministic transformations
     -> high-confidence mappings
@@ -47,13 +54,20 @@ is accepted only from an authorized local checkout or extracted local tree.
 Enterprise source is read-only input and is never placed in a `.omb` pack,
 build artifact, report, or repository.
 
-`BrainTrainer.build()` accepts either one repository containing version
-folders/branches (`enterprise_root`) or a per-version mapping
-(`enterprise_roots`).  Pack metadata stores only derived identities such as
-version, commit/ref, source mode, and whether Enterprise knowledge was
-included.
+The redistributable Community pack is built with `BrainTrainer`. An authorized
+user can then build an Enterprise overlay with `EnterpriseOverlayTrainer` from
+either one repository containing version folders/branches (`enterprise_root`)
+or a per-version mapping (`enterprise_roots`). The overlay is fingerprinted,
+bound to one exact Community Brain fingerprint, and rejected if used with a
+different base. It is labelled `local_authorized_use_only`; the application
+does not present it as a redistributable public artifact.
 
-The pack schema is versioned and fingerprinted. Schema v3 is allow-listed:
+Enterprise source is needed only while that local overlay is trained. After
+training, runtime needs the Community `.omb`, the optional overlay `.omb`, and
+the custom addon. Tests delete all Community and Enterprise training trees
+before running a Brain migration to enforce this boundary.
+
+The pack schema is versioned and fingerprinted. Schema v4 is allow-listed:
 unknown top-level, step, mapping, transformation, or compatibility keys are
 rejected before a pack can be written. Its archive contains only `brain.json`;
 unexpected archive members and unsupported schema versions are rejected. The
@@ -99,11 +113,17 @@ uncertain changes remain in the decision report.
 
 ## Enterprise and future versions
 
-Community and Enterprise are composed as separate indexed layers during
-training.  Module provenance is retained in the index (`community`,
+Community and Enterprise are composed as separate indexed layers during local
+overlay training. Module provenance is retained in the index (`community`,
 `enterprise`, or a composed layer), and exact per-version identities are
-recorded.  Adding Odoo 20 requires a new adjacent pack and a new training
-run; it does not require changing the `.omb` format or runtime architecture.
+recorded. The overlay contains derived mappings, compatibility facts and model
+coefficients, not indexed source, raw training examples, or source files. A
+defense-in-depth leakage audit rejects verbatim long source fragments before
+writing an Enterprise pack. This audit supplements rather than replaces the
+authorized user's licensing obligations.
+
+Adding Odoo 20 requires a new adjacent pack and a new training run; it does not
+require changing the runtime architecture.
 
 ## Local commands
 
@@ -113,14 +133,15 @@ Build a full Community Brain:
 python -m odoo_migrator brain build --from 14 --to 19 --output .\migration_brain.omb
 ```
 
-Build with a local Enterprise repository whose branches or version folders
+Build a local Enterprise overlay whose repository branches or version folders
 are named `14.0` through `19.0`:
 
 ```powershell
-python -m odoo_migrator brain build --from 14 --to 19 `
+python -m odoo_migrator brain build-enterprise-overlay `
+  --base .\migration_brain.omb `
   --enterprise D:\Sources\odoo-enterprise `
   --history-repo D:\Sources\odoo-full-history `
-  --output .\migration_brain.omb
+  --output .\enterprise_overlay.omb
 ```
 
 Inspect and run the source-free runtime:
@@ -129,6 +150,11 @@ Inspect and run the source-free runtime:
 python -m odoo_migrator brain info .\migration_brain.omb
 python -m odoo_migrator brain migrate ADDONS OUTPUT `
   --brain .\migration_brain.omb --from 16 --to 18
+
+# With locally trained Enterprise knowledge:
+python -m odoo_migrator brain migrate ADDONS OUTPUT `
+  --brain .\migration_brain.omb `
+  --overlay .\enterprise_overlay.omb --from 16 --to 18
 ```
 
 The normal source-aware `analyze`/`migrate` commands remain available for

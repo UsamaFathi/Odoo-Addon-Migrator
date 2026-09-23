@@ -19,6 +19,7 @@ from odoo_migrator.sources.indexer import OdooIndex, SourceIndexer
 from odoo_migrator.sources.manager import SourceManager
 
 from .dataset import build_method_dataset
+from .audit import assert_no_source_leakage
 from .history import (
     DEFAULT_GIT_TIMEOUT_SECONDS,
     mine_git_method_renames_with_status,
@@ -286,6 +287,7 @@ class BrainTrainer:
         indexes: dict[int, OdooIndex] = {}
         identities: dict[str, dict] = {}
         enterprise_versions: list[int] = []
+        enterprise_source_roots: list[Path] = []
         count = target - source + 1
 
         resolved_direct_enterprise: dict[Path, list[int]] = {}
@@ -353,6 +355,7 @@ class BrainTrainer:
                 )
                 community = compose_indexes(community, enterprise)
                 enterprise_versions.append(version)
+                enterprise_source_roots.append(resolution.source_root)
                 identities[str(version)].update({
                     "enterprise": True,
                     "enterprise_mode": resolution.mode,
@@ -576,7 +579,12 @@ class BrainTrainer:
             steps=steps,
             training=training,
             source_identities=identities,
+            pack_kind=("enterprise_composite" if enterprise_versions else "community"),
         )
+        if enterprise_source_roots:
+            report("Auditing derived Brain pack for source leakage", 94)
+            leakage_audit = assert_no_source_leakage(payload, enterprise_source_roots)
+            payload["source_leakage_audit"] = leakage_audit.metadata()
         pack = BrainPack(payload)
         report("Writing Migration Brain pack", 96)
         writing_started = perf_counter()

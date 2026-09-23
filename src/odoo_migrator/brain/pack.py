@@ -11,15 +11,19 @@ import zipfile
 from .ranker import LogisticRanker
 
 
-BRAIN_SCHEMA_VERSION = 3
+BRAIN_SCHEMA_VERSION = 4
 BRAIN_MEMBER = "brain.json"
-SUPPORTED_BRAIN_SCHEMA_VERSIONS = frozenset({1, 2, BRAIN_SCHEMA_VERSION})
+SUPPORTED_BRAIN_SCHEMA_VERSIONS = frozenset({1, 2, 3, BRAIN_SCHEMA_VERSION})
 
 
-_TOP_LEVEL_KEYS = frozenset({
+_TOP_LEVEL_KEYS_V3 = frozenset({
     "schema_version", "brain_type", "source_version", "target_version",
     "created_at", "fingerprint", "ranker", "training", "source_identities",
     "knowledge_policy", "steps",
+})
+_TOP_LEVEL_KEYS_V4 = _TOP_LEVEL_KEYS_V3 | frozenset({
+    "pack_kind", "base_fingerprint", "distribution_policy",
+    "enterprise_knowledge", "source_leakage_audit",
 })
 _STEP_KEYS = frozenset({
     "source", "target", "method_renames", "model_renames",
@@ -75,7 +79,7 @@ def _validate_mapping_items(items: Any, allowed: frozenset[str], context: str) -
 
 
 def _validate_schema_v3(payload: Mapping[str, Any]) -> None:
-    _reject_unknown_keys(payload, _TOP_LEVEL_KEYS, "brain")
+    _reject_unknown_keys(payload, _TOP_LEVEL_KEYS_V3, "brain")
     if payload.get("brain_type") != "odoo_migration_brain":
         raise ValueError("Migration Brain schema has an invalid brain_type.")
     try:
@@ -219,6 +223,81 @@ def _validate_schema_v3(payload: Mapping[str, Any]) -> None:
         )
 
 
+def _validate_schema_v4(payload: Mapping[str, Any]) -> None:
+    _reject_unknown_keys(payload, _TOP_LEVEL_KEYS_V4, "brain")
+    legacy_payload = {
+        key: value
+        for key, value in payload.items()
+        if key in _TOP_LEVEL_KEYS_V3
+    }
+    legacy_payload["knowledge_policy"] = {
+        key: value
+        for key, value in payload.get("knowledge_policy", {}).items()
+        if key in {
+            "source_code_embedded",
+            "automatic_changes_require_deterministic_transform",
+            "ambiguous_predictions_are_review_only",
+        }
+    }
+    _validate_schema_v3(legacy_payload)
+
+    pack_kind = payload.get("pack_kind")
+    if pack_kind not in {"community", "enterprise_composite", "enterprise_overlay"}:
+        raise ValueError("Migration Brain schema has an invalid pack_kind.")
+    enterprise_knowledge = payload.get("enterprise_knowledge")
+    if not isinstance(enterprise_knowledge, bool):
+        raise ValueError("Migration Brain schema requires enterprise_knowledge metadata.")
+    if pack_kind == "community" and enterprise_knowledge:
+        raise ValueError("A Community Brain cannot contain Enterprise knowledge.")
+    if pack_kind in {"enterprise_composite", "enterprise_overlay"} and not enterprise_knowledge:
+        raise ValueError("An Enterprise Brain pack must declare Enterprise knowledge.")
+
+    base_fingerprint = payload.get("base_fingerprint")
+    if pack_kind == "enterprise_overlay":
+        if not isinstance(base_fingerprint, str) or len(base_fingerprint) != 64:
+            raise ValueError("An Enterprise overlay must bind to a base Brain fingerprint.")
+    elif base_fingerprint is not None:
+        raise ValueError("Only an Enterprise overlay may define base_fingerprint.")
+
+    expected_policy = (
+        "public_community"
+        if pack_kind == "community"
+        else "local_authorized_use_only"
+    )
+    if payload.get("distribution_policy") != expected_policy:
+        raise ValueError(
+            f"Migration Brain {pack_kind} requires distribution_policy={expected_policy!r}."
+        )
+
+    policy = payload.get("knowledge_policy", {})
+    _reject_unknown_keys(
+        policy,
+        frozenset({
+            "source_code_embedded",
+            "enterprise_source_embedded",
+            "training_examples_embedded",
+            "automatic_changes_require_deterministic_transform",
+            "ambiguous_predictions_are_review_only",
+        }),
+        "knowledge_policy",
+    )
+    if policy.get("enterprise_source_embedded") is not False:
+        raise ValueError("Migration Brain packs must not embed Enterprise source.")
+    if policy.get("training_examples_embedded") is not False:
+        raise ValueError("Migration Brain packs must not embed raw training examples.")
+
+    audit = payload.get("source_leakage_audit")
+    if not isinstance(audit, Mapping):
+        raise ValueError("Migration Brain schema requires source leakage audit metadata.")
+    _reject_unknown_keys(
+        audit,
+        frozenset({"status", "files_scanned", "fragments_checked"}),
+        "source_leakage_audit",
+    )
+    if audit.get("status") not in {"not_required", "passed"}:
+        raise ValueError("Migration Brain source leakage audit did not pass.")
+
+
 @dataclass(frozen=True, slots=True)
 class BrainPack:
     payload: dict[str, Any]
@@ -234,6 +313,39 @@ class BrainPack:
     @property
     def fingerprint(self) -> str:
         return str(self.payload.get("fingerprint", ""))
+
+    @property
+    def pack_kind(self) -> str:
+        explicit = self.payload.get("pack_kind")
+        if explicit:
+            return str(explicit)
+        return (
+            "enterprise_composite"
+            if self.payload.get("training", {}).get("enterprise_versions")
+            else "community"
+        )
+
+    @property
+    def base_fingerprint(self) -> str | None:
+        value = self.payload.get("base_fingerprint")
+        return str(value) if value else None
+
+    @property
+    def enterprise_knowledge(self) -> bool:
+        if "enterprise_knowledge" in self.payload:
+            return bool(self.payload["enterprise_knowledge"])
+        return bool(self.payload.get("training", {}).get("enterprise_versions"))
+
+    @property
+    def distribution_policy(self) -> str:
+        return str(
+            self.payload.get(
+                "distribution_policy",
+                "local_authorized_use_only"
+                if self.enterprise_knowledge
+                else "public_community",
+            )
+        )
 
     @property
     def ranker(self) -> LogisticRanker:
@@ -277,11 +389,37 @@ class BrainPack:
     def save(self, path: str | Path) -> Path:
         if self.contains_source_code:
             raise ValueError("Migration Brain pack must not contain Odoo source code.")
-        _validate_schema_v3(self.payload)
         destination = Path(path).expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(self.payload)
         payload["schema_version"] = BRAIN_SCHEMA_VERSION
+        enterprise_knowledge = bool(
+            payload.get("enterprise_knowledge")
+            or payload.get("training", {}).get("enterprise_versions")
+        )
+        pack_kind = payload.setdefault(
+            "pack_kind",
+            "enterprise_composite" if enterprise_knowledge else "community",
+        )
+        payload.setdefault("base_fingerprint", None)
+        payload.setdefault("enterprise_knowledge", enterprise_knowledge)
+        payload.setdefault(
+            "distribution_policy",
+            "public_community" if pack_kind == "community" else "local_authorized_use_only",
+        )
+        policy = dict(payload.get("knowledge_policy", {}))
+        policy.setdefault("enterprise_source_embedded", False)
+        policy.setdefault("training_examples_embedded", False)
+        payload["knowledge_policy"] = policy
+        payload.setdefault(
+            "source_leakage_audit",
+            {
+                "status": "not_required" if not enterprise_knowledge else "pending",
+                "files_scanned": 0,
+                "fragments_checked": 0,
+            },
+        )
+        _validate_schema_v4(payload)
         payload.setdefault("created_at", datetime.now(timezone.utc).isoformat())
         payload["fingerprint"] = ""
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -338,7 +476,9 @@ class BrainPack:
         loaded = cls(payload)
         if loaded.contains_source_code:
             raise ValueError("Migration Brain pack must not contain Odoo source code.")
-        if int(payload.get("schema_version", 0)) >= 3:
+        if int(payload.get("schema_version", 0)) >= 4:
+            _validate_schema_v4(payload)
+        elif int(payload.get("schema_version", 0)) >= 3:
             _validate_schema_v3(payload)
         return loaded
 
@@ -351,7 +491,11 @@ def new_brain_payload(
     steps: Mapping[str, Mapping[str, Any]],
     training: Mapping[str, Any],
     source_identities: Mapping[str, Any],
+    pack_kind: str = "community",
+    base_fingerprint: str | None = None,
+    source_leakage_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    enterprise_knowledge = pack_kind in {"enterprise_composite", "enterprise_overlay"}
     return {
         "schema_version": BRAIN_SCHEMA_VERSION,
         "brain_type": "odoo_migration_brain",
@@ -359,13 +503,26 @@ def new_brain_payload(
         "target_version": int(target),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "fingerprint": "",
+        "pack_kind": pack_kind,
+        "base_fingerprint": base_fingerprint,
+        "distribution_policy": (
+            "local_authorized_use_only" if enterprise_knowledge else "public_community"
+        ),
+        "enterprise_knowledge": enterprise_knowledge,
         "ranker": ranker.as_dict(),
         "training": dict(training),
         "source_identities": dict(source_identities),
         "knowledge_policy": {
             "source_code_embedded": False,
+            "enterprise_source_embedded": False,
+            "training_examples_embedded": False,
             "automatic_changes_require_deterministic_transform": True,
             "ambiguous_predictions_are_review_only": True,
         },
+        "source_leakage_audit": dict(source_leakage_audit or {
+            "status": "not_required" if not enterprise_knowledge else "pending",
+            "files_scanned": 0,
+            "fragments_checked": 0,
+        }),
         "steps": {key: dict(value) for key, value in steps.items()},
     }

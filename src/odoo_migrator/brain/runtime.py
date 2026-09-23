@@ -28,6 +28,7 @@ from odoo_migrator.validation import ValidationItem, validate_project
 from odoo_migrator.sources.indexer import SourceIndexer
 
 from .pack import BrainPack
+from .overlay import BrainBundle
 
 
 @dataclass(frozen=True, slots=True)
@@ -826,6 +827,7 @@ def _write_brain_report(path: Path, metadata: dict, findings: tuple[Finding, ...
 <p><strong>Source:</strong> Odoo {metadata['source_version']}<br><strong>Target:</strong> Odoo {metadata['target_version']}<br>
 <strong>Path:</strong> {html.escape(' -> '.join(metadata['migration_path']))}<br>
 <strong>Brain fingerprint:</strong> {html.escape(metadata['brain_fingerprint'])}<br>
+<strong>Knowledge:</strong> {'Community + local Enterprise overlay' if metadata['enterprise_knowledge'] else 'Community'}<br>
 <strong>Validation:</strong> {html.escape(metadata['validation']['state'])}</p>
 <div class="note">This report was produced without indexing Odoo Community or Enterprise source at runtime. Static validation is not runtime compatibility proof.</div>
 <h2>Decisions</h2><p>{len(metadata['changes'])} automatic changes; {len(findings)} unresolved compatibility finding(s).</p>
@@ -843,11 +845,19 @@ class BrainRuntimeMigrator:
 
     def __init__(
         self,
-        brain: BrainPack | str | Path,
+        brain: BrainPack | BrainBundle | str | Path,
         *,
+        overlay: BrainPack | str | Path | None = None,
         registry: MigrationPackRegistry | None = None,
     ):
-        self.brain = brain if isinstance(brain, BrainPack) else BrainPack.load(brain)
+        if isinstance(brain, BrainBundle):
+            if overlay is not None:
+                raise ValueError("Do not provide overlay twice.")
+            self.brain = brain
+        elif overlay is not None:
+            self.brain = BrainBundle.load(brain, overlay)
+        else:
+            self.brain = brain if isinstance(brain, BrainPack) else BrainPack.load(brain)
         self.registry = registry or default_registry()
 
     def migrate(
@@ -930,6 +940,22 @@ class BrainRuntimeMigrator:
                 "tool": "Odoo Addon Migrator",
                 "engine": "migration_brain",
                 "brain_fingerprint": self.brain.fingerprint,
+                "brain_components": (
+                    self.brain.component_fingerprints
+                    if isinstance(self.brain, BrainBundle)
+                    else {
+                        "community": self.brain.fingerprint,
+                        "enterprise_overlay": None,
+                    }
+                ),
+                "enterprise_knowledge": bool(
+                    getattr(self.brain, "enterprise_knowledge", False)
+                ),
+                "brain_distribution_policy": (
+                    self.brain.active.distribution_policy
+                    if isinstance(self.brain, BrainBundle)
+                    else self.brain.distribution_policy
+                ),
                 "brain_source_version": self.brain.source,
                 "brain_target_version": self.brain.target,
                 "created_at": datetime.now(timezone.utc).isoformat(),

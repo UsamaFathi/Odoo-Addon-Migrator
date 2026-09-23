@@ -17,7 +17,12 @@ from odoo_migrator.validation import validate_project
 from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.migrations.registry import UnsupportedMigrationPathError
 from odoo_migrator.sources.registry import SourceMode
-from odoo_migrator.brain import BrainPack, BrainRuntimeMigrator, BrainTrainer
+from odoo_migrator.brain import (
+    BrainPack,
+    BrainRuntimeMigrator,
+    BrainTrainer,
+    EnterpriseOverlayTrainer,
+)
 
 app = typer.Typer(help="Local source-aware Odoo custom-addon migration assistant.")
 source_app = typer.Typer(help="Manage local official Odoo Community source snapshots.")
@@ -94,7 +99,13 @@ def brain_build(
         help="Optional full Git repo with Odoo version branches for strong rename supervision.",
     ),
 ):
-    """Train once from official source and write a reusable .omb brain pack."""
+    """Build the distributable Community-only Migration Brain."""
+    if enterprise is not None:
+        console.print(
+            "[red]Enterprise knowledge must be built as a separate local overlay. "
+            "Use 'brain build-enterprise-overlay'.[/red]"
+        )
+        raise typer.Exit(2)
     trainer = BrainTrainer()
     try:
         with console.status("Training Migration Brain from Odoo source..."):
@@ -102,7 +113,6 @@ def brain_build(
                 output,
                 source=source,
                 target=target,
-                enterprise_root=enterprise,
                 history_repo=history_repo,
             )
     except (ValueError, SourceManagerError) as exc:
@@ -120,6 +130,57 @@ def brain_build(
     console.print(f"Signature adapters learned: {result.signature_adapters}")
     console.print("[bold]Production decision metrics[/bold]")
     console.print_json(json.dumps(result.validation_metrics))
+
+
+def _parse_enterprise_versions(values: list[str]) -> dict[int, Path]:
+    parsed: dict[int, Path] = {}
+    for value in values:
+        version_text, separator, path_text = value.partition("=")
+        if not separator or not version_text.isdigit() or not path_text.strip():
+            raise ValueError(
+                f"Invalid --enterprise-version {value!r}; expected VERSION=PATH."
+            )
+        parsed[int(version_text)] = Path(path_text).expanduser()
+    return parsed
+
+
+@brain_app.command("build-enterprise-overlay")
+def brain_build_enterprise_overlay(
+    base: Path=typer.Option(..., "--base", help="Saved Community Brain .omb."),
+    output: Path=typer.Option(
+        Path.home() / ".odoo-addon-migrator" / "brain" / "enterprise_overlay.omb",
+        "--output",
+    ),
+    enterprise: Path | None=typer.Option(
+        None,
+        "--enterprise",
+        help="Authorized local Enterprise repository with version branches/folders.",
+    ),
+    enterprise_version: list[str]=typer.Option(
+        [],
+        "--enterprise-version",
+        help="Per-version source as VERSION=PATH; repeat for each required version.",
+    ),
+    history_repo: Path | None=typer.Option(None, "--history-repo"),
+):
+    """Build a local-authorized Enterprise overlay bound to a Community Brain."""
+    try:
+        roots = _parse_enterprise_versions(enterprise_version)
+        with console.status("Training local Enterprise Brain overlay..."):
+            result = EnterpriseOverlayTrainer().build(
+                base,
+                output,
+                enterprise_root=enterprise,
+                enterprise_roots=roots or None,
+                history_repo=history_repo,
+            )
+    except (ValueError, SourceManagerError) as exc:
+        console.print(f"[red]{_terminal_text(exc)}[/red]")
+        raise typer.Exit(2)
+    console.print(f"[green]Enterprise overlay ready:[/green] {result.output}")
+    console.print(f"Base fingerprint: {result.pack.base_fingerprint}")
+    console.print(f"Overlay fingerprint: {result.pack.fingerprint}")
+    console.print("Distribution policy: local authorized use only")
 
 
 @brain_app.command("info")
@@ -141,6 +202,10 @@ def brain_info(path: Path):
             str(len(step.get("dependency_renames", ()))),
         )
     console.print(f"[bold]Brain fingerprint:[/bold] {brain.fingerprint}")
+    console.print(f"[bold]Pack kind:[/bold] {brain.pack_kind}")
+    console.print(f"[bold]Distribution policy:[/bold] {brain.distribution_policy}")
+    if brain.base_fingerprint:
+        console.print(f"[bold]Base fingerprint:[/bold] {brain.base_fingerprint}")
     console.print(f"[bold]Range:[/bold] Odoo {brain.source} -> {brain.target}")
     console.print(table)
     console.print("[bold]Production decision metrics[/bold]")
@@ -161,12 +226,17 @@ def brain_migrate(
     addons: Path,
     output: Path,
     brain: Path=typer.Option(..., "--brain"),
+    overlay: Path | None=typer.Option(
+        None,
+        "--overlay",
+        help="Optional local Enterprise overlay bound to the Community Brain.",
+    ),
     source: int=typer.Option(..., "--from"),
     target: int=typer.Option(..., "--to"),
 ):
     """Migrate custom addons using only a trained .omb pack; no Odoo source is indexed."""
     try:
-        runtime = BrainRuntimeMigrator(brain)
+        runtime = BrainRuntimeMigrator(brain, overlay=overlay)
         result = runtime.migrate(
             addons,
             output,
