@@ -9,7 +9,7 @@ The user chooses any supported source version and any higher supported target ve
 ## Product constraints
 - Local-first. Source code must not leave the developer's machine.
 - Never modify the original project by default. Write migrated output to a separate directory.
-- The migration engine must be source-aware: use the official Odoo source tree/index for both source and target versions.
+- The source-aware engine must use official Odoo source indexes for training, fallback analysis, and evaluation. Normal Migration Brain runtime must not require or index official Odoo source once a valid `.omb` pack exists.
 - Do not claim 100% compatibility from static rewriting alone.
 - Every automated change must be explainable and auditable.
 - Preserve a before/after diff and migration report.
