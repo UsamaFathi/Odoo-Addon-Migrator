@@ -242,6 +242,7 @@ class MethodRenameResolver:
 
     category = "python"
     automatic = True
+    confidence = 0.88
 
     def __init__(self, source: int, target: int):
         self.source = source
