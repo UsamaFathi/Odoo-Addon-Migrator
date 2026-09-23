@@ -140,6 +140,113 @@ def _same_name_samples(source: OdooIndex, target: OdooIndex, step: str,
     return samples
 
 
+
+def _exact_semantic_rename_samples(
+    source: OdooIndex,
+    target: OdooIndex,
+    step: str,
+    *,
+    hard_negatives: int = 3,
+) -> list[MethodTrainingSample]:
+    """Build trusted rename examples from unique exact semantic fingerprints.
+
+    This does not depend on the learned ranker or the legacy weighted matcher:
+    a removed method and an added method must have the same structural/call/
+    attribute/signature/control fingerprint and the match must be one-to-one.
+    """
+    diff = compare_indexes(source, target)
+    samples: list[MethodTrainingSample] = []
+
+    def fingerprint(features: dict) -> tuple:
+        shape = features.get("signature_shape", {})
+        return (
+            tuple(features.get("structure", ())),
+            tuple(features.get("calls", ())),
+            tuple(features.get("attributes", ())),
+            tuple(features.get("decorators", ())),
+            tuple(features.get("strings", ())),
+            tuple(sorted(shape.items())),
+            int(features.get("returns", 0)),
+            int(features.get("raises", 0)),
+            int(features.get("branches", 0)),
+            int(features.get("loops", 0)),
+        )
+
+    for change in diff.model_changes:
+        if not change.removed_methods or not change.added_methods:
+            continue
+        old_model = source.models.get(change.model)
+        new_model = target.models.get(change.model)
+        if old_model is None or new_model is None:
+            continue
+
+        added_by_fp: dict[tuple, list[str]] = {}
+        for new_name in sorted(change.added_methods):
+            features = new_model.method_features.get(new_name)
+            if not features or features.get("node_count", 0) < 8:
+                continue
+            added_by_fp.setdefault(fingerprint(features), []).append(new_name)
+
+        candidate_use: dict[str, int] = {}
+        positives: list[tuple[str, str]] = []
+        for old_name in sorted(change.removed_methods):
+            old_features = old_model.method_features.get(old_name)
+            if not old_features or old_features.get("node_count", 0) < 8:
+                continue
+            candidates = added_by_fp.get(fingerprint(old_features), [])
+            if len(candidates) != 1:
+                continue
+            new_name = candidates[0]
+            positives.append((old_name, new_name))
+            candidate_use[new_name] = candidate_use.get(new_name, 0) + 1
+
+        for old_name, new_name in positives:
+            if candidate_use[new_name] != 1:
+                continue
+            old_features = old_model.method_features[old_name]
+            new_features = new_model.method_features[new_name]
+            samples.append(MethodTrainingSample(
+                step,
+                change.model,
+                old_name,
+                new_name,
+                _feature_pair(old_name, old_features, new_name, new_features),
+                1,
+                1.0,
+                "exact_semantic_rename",
+            ))
+
+            negatives = []
+            for candidate_name in sorted(change.added_methods):
+                if candidate_name == new_name:
+                    continue
+                candidate_features = new_model.method_features.get(candidate_name)
+                if not candidate_features or candidate_features.get("node_count", 0) < 6:
+                    continue
+                features = _feature_pair(
+                    old_name, old_features, candidate_name, candidate_features
+                )
+                hardness = (
+                    features["ast"] * 0.40
+                    + features["calls"] * 0.25
+                    + features["attrs"] * 0.15
+                    + features["signature"] * 0.10
+                    + features["name"] * 0.10
+                )
+                negatives.append((hardness, candidate_name, features))
+            for _, candidate_name, features in sorted(negatives, reverse=True)[:hard_negatives]:
+                samples.append(MethodTrainingSample(
+                    step,
+                    change.model,
+                    old_name,
+                    candidate_name,
+                    features,
+                    0,
+                    1.0,
+                    "exact_rename_hard_negative",
+                ))
+    return samples
+
 def _weak_rename_samples(source: OdooIndex, target: OdooIndex, step: str) -> list[MethodTrainingSample]:
     """Use only existing ultra-conservative rename matches as weak supervision."""
     diff = compare_indexes(source, target)
@@ -184,6 +291,7 @@ def build_method_dataset(indexes: Mapping[int, OdooIndex], source: int, target: 
         new = indexes[version + 1]
         step = f"{version}_to_{version + 1}"
         samples.extend(_same_name_samples(old, new, step))
+        samples.extend(_exact_semantic_rename_samples(old, new, step))
         samples.extend(_weak_rename_samples(old, new, step))
 
     unique: dict[str, MethodTrainingSample] = {}
