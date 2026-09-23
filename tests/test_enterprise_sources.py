@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 from odoo_migrator.application.services import AnalysisService, MigrationService
 from odoo_migrator.sources.composite import compose_indexes
+from odoo_migrator.sources.enterprise import resolve_enterprise_source
 from odoo_migrator.sources.indexer import SourceIndexer
 from odoo_migrator.sources.registry import SourceSnapshot
 
@@ -93,3 +98,55 @@ def test_enterprise_source_prevents_false_dependency_and_model_blockers_and_repl
     metadata = result.metadata_path.read_text(encoding="utf-8")
     assert str(enterprise18.resolve()) in metadata
     assert str(enterprise19.resolve()) in metadata
+
+
+
+def test_enterprise_version_folder_root_resolves_requested_version(tmp_path: Path):
+    repo = tmp_path / "enterprise"
+    _addon(repo / "16.0", "web_enterprise", 16)
+    _addon(repo / "17.0", "web_enterprise", 17)
+
+    sixteen = resolve_enterprise_source(repo, 16, cache_root=tmp_path / "cache")
+    seventeen = resolve_enterprise_source(repo, 17, cache_root=tmp_path / "cache")
+
+    assert sixteen.mode == "version_folder"
+    assert sixteen.source_root == (repo / "16.0").resolve()
+    assert seventeen.source_root == (repo / "17.0").resolve()
+
+
+def test_enterprise_git_branches_are_archived_without_checkout(tmp_path: Path):
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("Git is unavailable")
+
+    repo = tmp_path / "enterprise-repo"
+    repo.mkdir()
+    subprocess.run([git, "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run([git, "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run([git, "-C", str(repo), "config", "user.name", "Test"], check=True)
+
+    _addon(repo, "web_enterprise", 16)
+    subprocess.run([git, "-C", str(repo), "add", "."], check=True)
+    subprocess.run([git, "-C", str(repo), "commit", "-m", "v16"], check=True, capture_output=True)
+    subprocess.run([git, "-C", str(repo), "branch", "16.0"], check=True)
+
+    shutil.rmtree(repo / "web_enterprise")
+    _addon(repo, "web_enterprise", 17)
+    subprocess.run([git, "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run([git, "-C", str(repo), "commit", "-m", "v17"], check=True, capture_output=True)
+    subprocess.run([git, "-C", str(repo), "branch", "17.0"], check=True)
+
+    head_before = subprocess.check_output(
+        [git, "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    resolved = resolve_enterprise_source(repo, 16, cache_root=tmp_path / "cache")
+    head_after = subprocess.check_output(
+        [git, "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+
+    assert resolved.mode == "git_branch"
+    assert resolved.ref == "refs/heads/16.0"
+    assert "16.0" in (
+        resolved.source_root / "web_enterprise" / "__manifest__.py"
+    ).read_text(encoding="utf-8")
+    assert head_after == head_before
