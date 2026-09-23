@@ -28,6 +28,7 @@ from odoo_migrator.ui.widgets.step_indicator import StepIndicator
 from odoo_migrator.ui.workers.task_worker import TaskWorker
 
 logger = logging.getLogger("odoo_migrator.ui")
+application_logger = logging.getLogger("odoo_migrator")
 
 
 class _WorkflowScrollArea(QScrollArea):
@@ -60,8 +61,8 @@ def _display_version(version: str) -> str:
 def configure_logging() -> Path:
     root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "OdooAddonMigrator" / "logs"; root.mkdir(parents=True, exist_ok=True)
     log_path = root / "application.log"
-    if not any(isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == log_path for handler in logger.handlers):
-        handler = logging.FileHandler(log_path, encoding="utf-8"); handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s")); logger.addHandler(handler); logger.setLevel(logging.INFO)
+    if not any(isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == log_path for handler in application_logger.handlers):
+        handler = logging.FileHandler(log_path, encoding="utf-8"); handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s")); application_logger.addHandler(handler); application_logger.setLevel(logging.INFO)
     return root
 
 

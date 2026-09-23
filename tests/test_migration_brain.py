@@ -12,9 +12,14 @@ from odoo_migrator.brain.pack import BrainPack, new_brain_payload
 from odoo_migrator.brain.ranker import LogisticRanker, RankedExample
 from odoo_migrator.brain.runtime import BrainRuntimeMigrator
 from odoo_migrator.brain.trainer import BrainTrainer
-from odoo_migrator.brain.history import mine_git_method_renames
+from odoo_migrator.brain.history import (
+    mine_git_method_renames,
+    mine_git_method_renames_with_status,
+)
+import odoo_migrator.brain.dataset as dataset_module
+import odoo_migrator.brain.history as history_module
 from odoo_migrator.sources.registry import SourceSnapshot
-from odoo_migrator.sources.indexer import SourceIndexer
+from odoo_migrator.sources.indexer import ModelInfo, ModuleInfo, OdooIndex, SourceIndexer
 
 
 def _addon(root: Path, name: str, version: int, *, depends=(), model: str | None = None) -> Path:
@@ -118,6 +123,44 @@ class _Manager:
         )
 
 
+def _method_features(seed: int, *, node_count: int = 20) -> dict:
+    return {
+        "node_count": node_count,
+        "structure": ("FunctionDef", "arguments", "If", "Call", "Return"),
+        "calls": (f"service_{seed % 7}", "ensure_one"),
+        "attributes": (f"field_{seed % 11}", "env"),
+        "decorators": ("api.model",),
+        "strings": (f"token_{seed % 5}",),
+        "signature_shape": {
+            "positional": 2 + seed % 2,
+            "kwonly": 0,
+            "defaults": seed % 2,
+            "kw_defaults": 0,
+            "vararg": False,
+            "kwarg": False,
+        },
+        "returns": 1,
+        "raises": 0,
+        "branches": 1,
+        "loops": 0,
+    }
+
+
+def _semantic_index(version: int, *, candidate_count: int = 8) -> OdooIndex:
+    features = {"stable_method": _method_features(0)}
+    features.update({
+        f"candidate_{index:03d}": _method_features(index + 1)
+        for index in range(candidate_count)
+    })
+    model = ModelInfo(
+        "demo.model",
+        methods=set(features),
+        method_features=features,
+    )
+    module = ModuleInfo("demo", "demo", models={"demo.model": model})
+    return OdooIndex(str(version), {"demo": module}, source_version=version)
+
+
 def test_brain_trainer_builds_pack_from_source_once(tmp_path: Path):
     old = tmp_path / "odoo18"
     new = tmp_path / "odoo19"
@@ -136,6 +179,103 @@ def test_brain_trainer_builds_pack_from_source_once(tmp_path: Path):
     assert result.training_samples > 0
     assert result.pack.payload["training"]["dataset"]["positives"] > 0
     assert result.pack.payload["training"]["dataset"]["negatives"] > 0
+
+
+def test_brain_trainer_reports_dataset_progress_beyond_fifty_percent(tmp_path: Path):
+    old = tmp_path / "odoo18"
+    new = tmp_path / "odoo19"
+    _addon(old, "demo_core", 18, model="demo.model")
+    _addon(new, "demo_core", 19, model="demo.model")
+    progress = []
+
+    BrainTrainer(source_manager=_Manager({18: old, 19: new})).build(
+        tmp_path / "progress.omb",
+        source=18,
+        target=19,
+        progress=lambda stage, percent: progress.append((stage, percent)),
+    )
+
+    dataset_updates = [
+        (stage, percent)
+        for stage, percent in progress
+        if stage.startswith("Dataset Odoo 18 -> 19")
+    ]
+    assert dataset_updates
+    assert any(50 < percent < 62 for _, percent in dataset_updates)
+    assert any("stable API samples" in stage for stage, _ in dataset_updates)
+    assert any("exact semantic rename samples" in stage for stage, _ in dataset_updates)
+
+
+def test_dataset_reports_every_adjacent_step_and_reuses_one_diff(monkeypatch):
+    indexes = {
+        16: _semantic_index(16),
+        17: _semantic_index(17),
+        18: _semantic_index(18),
+    }
+    original_compare = dataset_module.compare_indexes
+    compare_calls = []
+
+    def counted_compare(source, target):
+        compare_calls.append((source.source_version, target.source_version))
+        return original_compare(source, target)
+
+    monkeypatch.setattr(dataset_module, "compare_indexes", counted_compare)
+    progress = []
+    dataset = dataset_module.build_method_dataset(
+        indexes,
+        16,
+        18,
+        progress=lambda stage, percent: progress.append((stage, percent)),
+    )
+
+    assert compare_calls == [(16, 17), (17, 18)]
+    assert any("Odoo 16 -> 17" in stage for stage, _ in progress)
+    assert any("Odoo 17 -> 18" in stage for stage, _ in progress)
+    assert set(dataset.step_counts) == {"16_to_17", "17_to_18"}
+
+
+def test_same_name_hard_negatives_are_bounded_and_deterministic():
+    source = _semantic_index(18, candidate_count=0)
+    target = _semantic_index(19, candidate_count=120)
+    first_diagnostics = {}
+    second_diagnostics = {}
+
+    first = dataset_module._same_name_samples(
+        source,
+        target,
+        "18_to_19",
+        hard_negatives=3,
+        diagnostics=first_diagnostics,
+    )
+    second = dataset_module._same_name_samples(
+        source,
+        target,
+        "18_to_19",
+        hard_negatives=3,
+        diagnostics=second_diagnostics,
+    )
+
+    negatives = [sample for sample in first if sample.origin == "hard_negative"]
+    assert len(negatives) <= 3
+    assert [sample.key for sample in first] == [sample.key for sample in second]
+    assert [sample.features for sample in first] == [sample.features for sample in second]
+    assert first_diagnostics == second_diagnostics
+    assert first_diagnostics["candidate_methods_considered"] == 120
+    assert first_diagnostics["similarity_comparisons"] <= 24
+    assert first_diagnostics["similarity_comparisons"] < 120
+
+
+def test_dataset_output_is_deterministic_with_step_counters():
+    indexes = {18: _semantic_index(18, candidate_count=30), 19: _semantic_index(19, candidate_count=30)}
+
+    first = dataset_module.build_method_dataset(indexes, 18, 19)
+    second = dataset_module.build_method_dataset(indexes, 18, 19)
+
+    assert [sample.key for sample in first.train] == [sample.key for sample in second.train]
+    assert [sample.key for sample in first.validation] == [sample.key for sample in second.validation]
+    assert first.step_counts == second.step_counts
+    assert first.step_counts["18_to_19"]["common_api_positives"] > 0
+    assert first.step_counts["18_to_19"]["hard_negatives"] > 0
 
 
 def test_brain_trainer_composes_per_version_enterprise_knowledge(tmp_path: Path):
@@ -662,6 +802,79 @@ def test_git_history_miner_finds_single_method_rename_hunk(tmp_path: Path):
         item.source_method == "old_method" and item.target_method == "new_method"
         for item in pairs
     )
+
+
+def test_git_history_timeout_is_non_fatal_and_reported(tmp_path: Path, monkeypatch):
+    repo_path = tmp_path / "history-timeout"
+    (repo_path / ".git").mkdir(parents=True)
+    monkeypatch.setattr(history_module.shutil, "which", lambda name: "git")
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(history_module.subprocess, "run", timeout)
+
+    result = mine_git_method_renames_with_status(
+        repo_path,
+        18,
+        19,
+        timeout_seconds=0.01,
+    )
+
+    assert result.renames == ()
+    assert result.status == "timeout"
+    assert "exceeded" in (result.detail or "")
+
+
+def test_brain_training_continues_when_git_history_times_out(tmp_path: Path, monkeypatch):
+    old = tmp_path / "odoo18"
+    new = tmp_path / "odoo19"
+    history = tmp_path / "history"
+    (history / ".git").mkdir(parents=True)
+    _addon(old, "demo_core", 18, model="demo.model")
+    _addon(new, "demo_core", 19, model="demo.model")
+    monkeypatch.setattr(history_module.shutil, "which", lambda name: "git")
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(history_module.subprocess, "run", timeout)
+    progress = []
+    result = BrainTrainer(
+        source_manager=_Manager({18: old, 19: new}),
+        history_timeout_seconds=0.01,
+    ).build(
+        tmp_path / "timeout.omb",
+        source=18,
+        target=19,
+        history_repo=history,
+        progress=lambda stage, percent: progress.append((stage, percent)),
+    )
+
+    diagnostics = result.pack.training["history_supervision"]["diagnostics"]["18_to_19"]
+    assert result.pack.supports(18, 19)
+    assert diagnostics["status"] == "timeout"
+    assert diagnostics["rename_pairs"] == 0
+    assert any("skipped after timeout" in stage for stage, _ in progress)
+
+
+def test_brain_training_succeeds_without_history_supervision(tmp_path: Path):
+    old = tmp_path / "odoo18"
+    new = tmp_path / "odoo19"
+    _addon(old, "demo_core", 18, model="demo.model")
+    _addon(new, "demo_core", 19, model="demo.model")
+    progress = []
+
+    result = BrainTrainer(source_manager=_Manager({18: old, 19: new})).build(
+        tmp_path / "without-history.omb",
+        source=18,
+        target=19,
+        progress=lambda stage, percent: progress.append((stage, percent)),
+    )
+
+    assert result.pack.supports(18, 19)
+    assert result.pack.training["history_supervision"]["enabled"] is False
+    assert any("history supervision unavailable" in stage.lower() for stage, _ in progress)
 
 
 

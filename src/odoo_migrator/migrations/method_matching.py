@@ -120,11 +120,13 @@ def high_confidence_method_renames(
 ) -> tuple[MethodRenameMatch, ...]:
     matches: list[MethodRenameMatch] = []
     changes = {item.model: item for item in diff.model_changes}
+    source_models = source.models
+    target_models = target.models
     for model_name, change in changes.items():
         if not change.removed_methods or not change.added_methods:
             continue
-        source_model = source.models.get(model_name)
-        target_model = target.models.get(model_name)
+        source_model = source_models.get(model_name)
+        target_model = target_models.get(model_name)
         if source_model is None or target_model is None:
             continue
         for old_name in sorted(change.removed_methods):

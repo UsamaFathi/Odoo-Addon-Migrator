@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
+from time import perf_counter
 from collections.abc import Callable, Mapping
 
 from odoo_migrator.migrations.autonomous import (
@@ -17,7 +19,10 @@ from odoo_migrator.sources.indexer import OdooIndex, SourceIndexer
 from odoo_migrator.sources.manager import SourceManager
 
 from .dataset import build_method_dataset
-from .history import mine_git_method_renames
+from .history import (
+    DEFAULT_GIT_TIMEOUT_SECONDS,
+    mine_git_method_renames_with_status,
+)
 from .knowledge import (
     asset_bundle_renames,
     field_renames,
@@ -28,6 +33,9 @@ from .knowledge import (
 )
 from .pack import BrainPack, new_brain_payload
 from .ranker import LogisticRanker, RankedExample
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,12 +65,14 @@ def _learned_method_renames(
 ) -> list[dict]:
     predictions: list[dict] = []
     changes = {item.model: item for item in diff.model_changes}
+    source_models = source.models
+    target_models = target.models
 
     for model_name, change in changes.items():
         if not change.removed_methods or not change.added_methods:
             continue
-        old_model = source.models.get(model_name)
-        new_model = target.models.get(model_name)
+        old_model = source_models.get(model_name)
+        new_model = target_models.get(model_name)
         if old_model is None or new_model is None:
             continue
 
@@ -245,10 +255,12 @@ class BrainTrainer:
         source_manager: SourceManager | None = None,
         registry: MigrationPackRegistry | None = None,
         indexer: SourceIndexer | None = None,
+        history_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS,
     ):
         self.source_manager = source_manager or SourceManager()
         self.registry = registry or default_registry()
         self.indexer = indexer or SourceIndexer()
+        self.history_timeout_seconds = history_timeout_seconds
 
     def build(
         self,
@@ -261,6 +273,7 @@ class BrainTrainer:
         history_repo: str | Path | None = None,
         progress: Callable[[str, int], None] | None = None,
     ) -> BrainTrainingResult:
+        build_started = perf_counter()
         if target <= source:
             raise ValueError("Migration Brain target must be higher than source.")
         for version in range(source, target):
@@ -279,11 +292,21 @@ class BrainTrainer:
         for offset, version in enumerate(range(source, target + 1)):
             report(f"Preparing Community Odoo {version}", 5 + int(offset / count * 25))
             snapshot = self.source_manager.ensure(version)
+            indexing_started = perf_counter()
             community = self.indexer.index(
                 snapshot.path,
                 source_commit=snapshot.actual_commit,
                 source_mode=snapshot.source_mode.value,
                 source_version=version,
+            )
+            logger.info(
+                "Migration Brain Community indexing version=%d elapsed_seconds=%.3f "
+                "modules=%d models=%d path=%s",
+                version,
+                perf_counter() - indexing_started,
+                len(community.modules),
+                len(community.models),
+                snapshot.path,
             )
             identities[str(version)] = {
                 "version": version,
@@ -312,11 +335,21 @@ class BrainTrainer:
                             "version folders/branches, or configure a separate Enterprise "
                             "folder for each Odoo version."
                         )
+                enterprise_indexing_started = perf_counter()
                 enterprise = self.indexer.index(
                     resolution.source_root,
                     source_commit=resolution.commit,
                     source_mode="enterprise_local",
                     source_version=version,
+                )
+                logger.info(
+                    "Migration Brain Enterprise indexing version=%d elapsed_seconds=%.3f "
+                    "modules=%d models=%d path=%s",
+                    version,
+                    perf_counter() - enterprise_indexing_started,
+                    len(enterprise.modules),
+                    len(enterprise.models),
+                    resolution.source_root,
                 )
                 community = compose_indexes(community, enterprise)
                 enterprise_versions.append(version)
@@ -329,7 +362,7 @@ class BrainTrainer:
                 })
             indexes[version] = community
 
-        report("Building supervised semantic dataset", 50)
+        report("Preparing semantic training dataset", 50)
         history_root = Path(history_repo).expanduser().resolve() if history_repo else None
         if history_root is None and enterprise_root is not None:
             candidate = Path(enterprise_root).expanduser().resolve()
@@ -337,19 +370,69 @@ class BrainTrainer:
                 history_root = candidate
 
         history_pairs: dict[str, set[tuple[str, str]]] = {}
+        history_diagnostics: dict[str, dict] = {}
         history_label_count = 0
         if history_root is not None and (history_root / ".git").exists():
-            for version in range(source, target):
-                items = mine_git_method_renames(history_root, version, version + 1)
-                pairs = {(item.source_method, item.target_method) for item in items}
-                history_pairs[f"{version}_to_{version + 1}"] = pairs
+            versions = list(range(source, target))
+            for offset, version in enumerate(versions):
+                step = f"{version}_to_{version + 1}"
+                history_percent = 51 + round(offset / max(1, len(versions) - 1) * 4)
+                report(
+                    f"Mining Git history: Odoo {version} -> {version + 1}",
+                    history_percent,
+                )
+                result = mine_git_method_renames_with_status(
+                    history_root,
+                    version,
+                    version + 1,
+                    timeout_seconds=self.history_timeout_seconds,
+                )
+                pairs = {
+                    (item.source_method, item.target_method)
+                    for item in result.renames
+                }
+                history_pairs[step] = pairs
                 history_label_count += len(pairs)
+                history_diagnostics[step] = {
+                    "status": result.status,
+                    "elapsed_seconds": round(result.elapsed_seconds, 6),
+                    "rename_pairs": len(pairs),
+                    "detail": result.detail,
+                }
+                logger.info(
+                    "Migration Brain history mining step=%s status=%s "
+                    "elapsed_seconds=%.3f rename_pairs=%d",
+                    step,
+                    result.status,
+                    result.elapsed_seconds,
+                    len(pairs),
+                )
+                if result.status == "timeout":
+                    report(
+                        f"Git history skipped after timeout: Odoo {version} -> {version + 1}",
+                        history_percent,
+                    )
+        else:
+            report("Git history supervision unavailable; continuing with indexed evidence", 51)
 
+        dataset_started = perf_counter()
         dataset = build_method_dataset(
             indexes,
             source,
             target,
             history_pairs=history_pairs,
+            progress=lambda message, percent: report(
+                message,
+                56 + round(max(0, min(100, percent)) / 100 * 5),
+            ),
+        )
+        logger.info(
+            "Migration Brain semantic dataset elapsed_seconds=%.3f samples=%d "
+            "positives=%d negatives=%d",
+            perf_counter() - dataset_started,
+            dataset.total,
+            dataset.positives,
+            dataset.negatives,
         )
         if dataset.positives == 0 or dataset.negatives == 0:
             raise ValueError(
@@ -357,6 +440,7 @@ class BrainTrainer:
             )
 
         report("Training semantic API ranker", 62)
+        ranker_started = perf_counter()
         ranker = LogisticRanker()
         ranker.fit(sample.ranked() for sample in dataset.train)
         baseline_validation = ranker.evaluate(
@@ -366,11 +450,22 @@ class BrainTrainer:
         production_gate = _calibrate_decision_gate(ranker, dataset.validation)
         production_threshold = float(production_gate["threshold"])
         production_margin = float(production_gate["margin"])
+        logger.info(
+            "Migration Brain semantic ranker elapsed_seconds=%.3f train_samples=%d "
+            "validation_samples=%d precision=%.6f recall=%.6f false_auto_fix_rate=%.6f",
+            perf_counter() - ranker_started,
+            len(dataset.train),
+            len(dataset.validation),
+            production_gate["precision"],
+            production_gate["recall"],
+            production_gate["false_auto_fix_rate"],
+        )
 
         steps: dict[str, dict] = {}
         method_count = model_count = dependency_count = field_count = 0
         xml_id_count = js_module_count = asset_bundle_count = signature_adapter_count = 0
         for offset, version in enumerate(range(source, target)):
+            learning_started = perf_counter()
             next_version = version + 1
             report(
                 f"Learning Odoo {version} -> {next_version} API changes",
@@ -429,6 +524,22 @@ class BrainTrainer:
             js_module_count += len(js_modules)
             asset_bundle_count += len(asset_bundles)
             signature_adapter_count += len(signatures)
+            logger.info(
+                "Migration Brain API learning step=%s elapsed_seconds=%.3f "
+                "method_renames=%d model_renames=%d dependency_renames=%d "
+                "field_renames=%d xml_id_renames=%d js_module_renames=%d "
+                "asset_bundle_renames=%d signature_adapters=%d",
+                key,
+                perf_counter() - learning_started,
+                len(methods),
+                len(models),
+                len(dependencies),
+                len(fields),
+                len(xml_ids),
+                len(js_modules),
+                len(asset_bundles),
+                len(signatures),
+            )
 
         training = {
             "dataset": dataset.as_dict(),
@@ -455,6 +566,7 @@ class BrainTrainer:
                     step: len(pairs)
                     for step, pairs in sorted(history_pairs.items())
                 },
+                "diagnostics": history_diagnostics,
             },
         }
         payload = new_brain_payload(
@@ -467,9 +579,25 @@ class BrainTrainer:
         )
         pack = BrainPack(payload)
         report("Writing Migration Brain pack", 96)
+        writing_started = perf_counter()
         destination = pack.save(output)
         loaded = BrainPack.load(destination)
+        logger.info(
+            "Migration Brain pack writing elapsed_seconds=%.3f output=%s bytes=%d",
+            perf_counter() - writing_started,
+            destination,
+            destination.stat().st_size,
+        )
         report("Migration Brain ready", 100)
+        logger.info(
+            "Migration Brain build complete source=%d target=%d elapsed_seconds=%.3f "
+            "samples=%d output=%s",
+            source,
+            target,
+            perf_counter() - build_started,
+            dataset.total,
+            destination,
+        )
         return BrainTrainingResult(
             loaded,
             destination,
