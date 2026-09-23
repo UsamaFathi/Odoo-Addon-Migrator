@@ -37,22 +37,55 @@ class ResultsPage(QWidget):
         buttons.addWidget(self.new_button, 1, 2); buttons.setColumnStretch(0, 1); buttons.setColumnStretch(1, 1); buttons.setColumnStretch(2, 1)
         layout.addLayout(buttons); layout.addStretch()
 
-    def set_result(self, result, analysis) -> None:
+    def set_result(self, result, analysis=None) -> None:
         state = getattr(result, "validation_state", None); issues = getattr(result, "validation_issues", ())
-        if state in (None, "not_run") and result.metadata_path and result.metadata_path.exists():
+        metadata = {}
+        if result.metadata_path and result.metadata_path.exists():
             try:
-                metadata = json.loads(result.metadata_path.read_text(encoding="utf-8")); validation = metadata.get("validation", {})
-                state, issues = validation.get("state", "failed"), validation.get("issues", ())
-            except (OSError, ValueError, TypeError): state, issues = "failed", ()
+                metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                metadata = {}
+        if state in (None, "not_run"):
+            validation = metadata.get("validation", {})
+            state, issues = validation.get("state", "failed"), validation.get("issues", ())
+
         state = state or "failed"; passed = state == "passed"; issue_count = len(issues)
         self.validation.setText("Static validation passed" if passed else f"Static validation failed  •  {issue_count} issue(s)")
         self.validation.set_role("badgeSuccess" if passed else "badgeDanger")
+
         plan = getattr(analysis, "plan", None)
-        path_text = f"Odoo {plan.source} → Odoo {plan.target}\n\n" if plan else ""
+        if plan:
+            source_version, target_version = plan.source, plan.target
+        else:
+            source_version = metadata.get("source_version")
+            target_version = metadata.get("target_version")
+        path_text = (
+            f"Odoo {source_version} → Odoo {target_version}\n\n"
+            if source_version is not None and target_version is not None else ""
+        )
+        resolved = len(getattr(analysis, "resolved_findings", ())) if analysis is not None else 0
+        review_required = len(getattr(analysis, "review_required", ())) if analysis is not None else 0
+        blockers = len(getattr(analysis, "blockers", ())) if analysis is not None else 0
+        engine = metadata.get("engine")
+        engine_text = "Migration Brain" if engine == "migration_brain" else "Source-aware engine"
         issue_text = f" ({issue_count} issue(s))" if issue_count else ""
-        self.summary.setText(f"{path_text}Automatic fixes applied: {len(result.changes)}\nAuto-resolved findings: {len(getattr(analysis, 'resolved_findings', ()))}\nReview notes remaining: {len(analysis.review_required)}\nBlockers: {len(analysis.blockers)}\nStatic Validation: {'Passed' if passed else 'Failed'}{issue_text}\n\nStatic validation {'passed' if passed else 'failed'}. Install and test the migrated addons on the target Odoo version before production use.")
+        self.summary.setText(
+            f"{path_text}{engine_text}\n"
+            f"Automatic fixes applied: {len(result.changes)}\n"
+            f"Auto-resolved findings: {resolved}\n"
+            f"Review notes remaining: {review_required}\n"
+            f"Blockers: {blockers}\n"
+            f"Static Validation: {'Passed' if passed else 'Failed'}{issue_text}\n\n"
+            f"Static validation {'passed' if passed else 'failed'}. "
+            "Install and test the migrated addons on the target Odoo version before production use."
+        )
         self.output.setText(f"Output folder\n{result.output}")
         self.metrics["fixes"].set_value(len(result.changes))
-        self.metrics["resolved"].set_value(len(getattr(analysis, "resolved_findings", ())))
-        self.metrics["review"].set_value(len(analysis.review_required))
-        self.metrics["blockers"].set_value(len(analysis.blockers))
+        self.metrics["resolved"].set_value(resolved)
+        self.metrics["review"].set_value(review_required)
+        self.metrics["blockers"].set_value(blockers)
+
+        report_path = getattr(result, "report_path", None)
+        diff_path = getattr(result, "diff_path", None)
+        self.report.setEnabled(bool(report_path and report_path.exists()))
+        self.diff.setEnabled(bool(diff_path and diff_path.exists()))
