@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -41,6 +42,32 @@ def validate_enterprise_tree(path: str | Path) -> Path:
         raise EnterpriseSourceError(f"No Odoo addon manifests were found in Enterprise source: {root}")
     return root
 
+
+
+def _version_folder_matches(name: str, version: int) -> bool:
+    normalized = re.sub(r"[_\-]+", " ", name.casefold())
+    pattern = rf"(?<!\d){version}(?:\.0)?(?!\d)"
+    return bool(re.search(pattern, normalized))
+
+
+def _discover_version_folder(root: Path, version: int) -> Path | None:
+    matches: list[Path] = []
+    try:
+        children = tuple(item for item in root.iterdir() if item.is_dir())
+    except OSError:
+        return None
+    for child in children:
+        if _version_folder_matches(child.name, version) and _has_manifests(child):
+            matches.append(child.resolve())
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = ", ".join(sorted(path.name for path in matches))
+        raise EnterpriseSourceError(
+            f"Multiple Enterprise folders look like Odoo {version}: {names}. "
+            "Select the intended version folder directly."
+        )
+    return None
 
 def _capture(args: list[str]) -> str | None:
     try:
@@ -130,10 +157,20 @@ def resolve_enterprise_source(
         f"odoo-{version}",
         f"odoo{version}",
         f"enterprise-{version}",
+        f"enterprise-{version}.0",
+        f"enterprise_{version}.0",
+        f"enterprise{version}.0",
+        f"odoo-enterprise-{version}",
+        f"odoo-enterprise-{version}.0",
+        f"odoo_enterprise_{version}.0",
     ):
         candidate = root / name
         if _has_manifests(candidate):
             return EnterpriseSourceResolution(version, root, candidate.resolve(), "version_folder")
+
+    discovered = _discover_version_folder(root, version)
+    if discovered is not None:
+        return EnterpriseSourceResolution(version, root, discovered, "version_folder")
 
     git_ref = _git_ref_for(root, version)
     if git_ref:
