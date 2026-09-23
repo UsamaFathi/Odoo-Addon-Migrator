@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, Signal
-from PySide6.QtWidgets import QAbstractScrollArea, QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractScrollArea, QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QProgressBar, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget
 
 from odoo_migrator.ui.models.addons_model import AddonsModel
 from odoo_migrator.ui.models.application_state import suggested_output_path
@@ -84,6 +84,11 @@ class ProjectPage(QWidget):
         self.brain_status = StatusBadge("Migration Brain not configured", "badgeInfo")
         self.brain_path = QLabel("Train once from Odoo source, then migrate custom addons without source indexing.")
         self.brain_path.setObjectName("muted"); self.brain_path.setWordWrap(True)
+        self.brain_progress = QProgressBar()
+        self.brain_progress.setRange(0, 100)
+        self.brain_progress.setValue(0)
+        self.brain_progress.setTextVisible(True)
+        self.brain_progress.hide()
         self.brain_mode = QCheckBox("Use Migration Brain runtime (no Odoo source indexing)")
         self.brain_mode.setEnabled(False); self.brain_mode.toggled.connect(self._brain_mode_changed)
         self.brain_build_button = QPushButton("Build Migration Brain")
@@ -125,7 +130,7 @@ class ProjectPage(QWidget):
         main.addWidget(self.sources, 0)
         brain_card = SurfaceCard(); brain_layout = QVBoxLayout(brain_card); brain_layout.setContentsMargins(18, 14, 18, 14); brain_layout.setSpacing(8)
         brain_title = QLabel("Migration Brain"); brain_title.setObjectName("sectionTitle"); brain_layout.addWidget(brain_title)
-        brain_layout.addWidget(self.brain_status); brain_layout.addWidget(self.brain_path); brain_layout.addWidget(self.brain_mode)
+        brain_layout.addWidget(self.brain_status); brain_layout.addWidget(self.brain_path); brain_layout.addWidget(self.brain_progress); brain_layout.addWidget(self.brain_mode)
         brain_actions = QHBoxLayout(); brain_actions.addWidget(self.brain_build_button); brain_actions.addWidget(self.brain_select_button); brain_actions.addWidget(self.brain_forget_button); brain_actions.addStretch(); brain_layout.addLayout(brain_actions)
         main.addWidget(brain_card, 0)
         table_header = QHBoxLayout(); title = QLabel("Detected addons"); title.setObjectName("sectionTitle"); table_header.addWidget(title); table_header.addStretch(); table_header.addWidget(self.module_search); main.addLayout(table_header, 0)
@@ -200,11 +205,24 @@ class ProjectPage(QWidget):
         self.brain_mode.setEnabled(True)
         self.brain_forget_button.show()
 
+    def set_brain_progress(self, stage: str, percent: int) -> None:
+        self.brain_progress.show()
+        self.brain_progress.setValue(max(0, min(100, int(percent))))
+        self.brain_progress.setFormat(f"{percent}%  •  {stage}")
+        self.brain_status.setText(stage)
+        self.brain_status.set_role("badgeInfo")
+
     def set_brain_busy(self, busy: bool) -> None:
         self.brain_build_button.setEnabled(not busy)
         self.brain_select_button.setEnabled(not busy)
         self.brain_forget_button.setEnabled(not busy)
         self.brain_mode.setEnabled(not busy and bool(self.brain_path.toolTip()))
+        if busy:
+            self.brain_progress.setValue(0)
+            self.brain_progress.setFormat("0%  •  Starting Migration Brain build…")
+            self.brain_progress.show()
+        else:
+            self.brain_progress.hide()
 
     def _brain_mode_changed(self, enabled: bool) -> None:
         self.analyze_button.setText("Migrate with Brain  →" if enabled else "Analyze & auto-resolve  →")
