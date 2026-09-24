@@ -144,6 +144,39 @@ python -m odoo_migrator brain build-enterprise-overlay `
   --output .\enterprise_overlay.omb
 ```
 
+### Google Colab training
+
+For an authorized Enterprise source set stored in Google Drive, use
+[`notebooks/train_migration_brain_colab.ipynb`](notebooks/train_migration_brain_colab.ipynb).
+The notebook checks out an exact Odoo Addon Migrator commit, acquires the
+centrally pinned Community snapshots from the official Odoo GitHub repository,
+validates separate Enterprise folders for 14.0 through 19.0, and runs the same
+`BrainTrainer` and `EnterpriseOverlayTrainer` used by the desktop and CLI.
+
+The recommended Drive layout is:
+
+```text
+My Drive/OdooEnterprise/
+    14.0/
+    15.0/
+    16.0/
+    17.0/
+    18.0/
+    19.0/
+```
+
+If the Enterprise root is shared with the Google account, add a shortcut to
+My Drive so Colab's Drive mount can see it. The notebook optionally copies each
+tree to disposable `/content` storage for faster indexing; it never writes to
+the Drive source. It saves the Community Brain, base-bound Enterprise overlay,
+training summary, SHA-256 checksums, and timing log back to Drive. Reruns reuse
+valid existing packs unless explicitly disabled.
+
+The notebook finishes with a 16-to-18 source-free smoke migration and verifies
+that the input fixture remains unchanged. The Enterprise overlay remains
+`local_authorized_use_only`: moving training to Colab does not change licensing
+or distribution rights.
+
 Inspect and run the source-free runtime:
 
 ```powershell

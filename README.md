@@ -59,6 +59,13 @@ AST/XML transformation guards are applied. Ambiguous decisions remain in the
 report. See [MIGRATION_BRAIN.md](MIGRATION_BRAIN.md) for the architecture,
 metrics, and safety boundaries.
 
+Authorized teams can train the Community Brain and a local Enterprise overlay
+in Google Colab with
+[`notebooks/train_migration_brain_colab.ipynb`](notebooks/train_migration_brain_colab.ipynb).
+Normal end users then migrate with the resulting `.omb` files and do not need
+Community or Enterprise source paths. The Enterprise overlay is still licensed
+for local authorized use only and must not be redistributed without permission.
+
 ## Developer setup
 
 ```bash
