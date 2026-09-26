@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import logging
 from pathlib import Path
 from time import perf_counter
@@ -37,6 +39,7 @@ from .ranker import LogisticRanker, RankedExample
 
 
 logger = logging.getLogger(__name__)
+TRAINER_CHECKPOINT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +250,171 @@ def _calibrate_decision_gate(ranker: LogisticRanker, samples) -> dict:
     return pool[0]
 
 
+def _checkpoint_identity(value: Mapping) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _load_training_checkpoint(path: Path | None, expected_identity: str) -> dict | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        integrity = str(payload.pop("integrity", ""))
+        actual = _checkpoint_identity(payload)
+        if integrity != actual:
+            raise ValueError("checkpoint integrity mismatch")
+        if payload.get("schema_version") != TRAINER_CHECKPOINT_SCHEMA_VERSION:
+            raise ValueError("checkpoint schema mismatch")
+        if payload.get("input_identity") != expected_identity:
+            logger.info("Ignoring Migration Brain checkpoint with different source identity: %s", path)
+            return None
+        if not isinstance(payload.get("training"), Mapping):
+            raise ValueError("checkpoint training metadata is missing")
+        if not isinstance(payload.get("ranker"), Mapping):
+            raise ValueError("checkpoint ranker is missing")
+        if not isinstance(payload.get("steps", {}), Mapping):
+            raise ValueError("checkpoint steps are invalid")
+        LogisticRanker.from_dict(payload["ranker"])
+        return payload
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Ignoring invalid Migration Brain checkpoint %s: %s", path, exc)
+        return None
+
+
+def _save_training_checkpoint(path: Path | None, payload: Mapping) -> None:
+    if path is None:
+        return
+    destination = path.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    value = dict(payload)
+    value["integrity"] = _checkpoint_identity(value)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(destination)
+
+
+def _fit_semantic_ranker(
+    indexes: Mapping[int, OdooIndex],
+    source: int,
+    target: int,
+    *,
+    history_root: Path | None,
+    history_timeout_seconds: float,
+    report: Callable[[str, int], None],
+) -> tuple[LogisticRanker, dict]:
+    report("Preparing semantic training dataset", 50)
+    history_pairs: dict[str, set[tuple[str, str]]] = {}
+    history_diagnostics: dict[str, dict] = {}
+    history_label_count = 0
+    if history_root is not None and (history_root / ".git").exists():
+        versions = list(range(source, target))
+        for offset, version in enumerate(versions):
+            step = f"{version}_to_{version + 1}"
+            history_percent = 51 + round(offset / max(1, len(versions) - 1) * 4)
+            report(f"Mining Git history: Odoo {version} -> {version + 1}", history_percent)
+            result = mine_git_method_renames_with_status(
+                history_root,
+                version,
+                version + 1,
+                timeout_seconds=history_timeout_seconds,
+            )
+            pairs = {(item.source_method, item.target_method) for item in result.renames}
+            history_pairs[step] = pairs
+            history_label_count += len(pairs)
+            history_diagnostics[step] = {
+                "status": result.status,
+                "elapsed_seconds": round(result.elapsed_seconds, 6),
+                "rename_pairs": len(pairs),
+                "detail": result.detail,
+            }
+            logger.info(
+                "Migration Brain history mining step=%s status=%s "
+                "elapsed_seconds=%.3f rename_pairs=%d",
+                step,
+                result.status,
+                result.elapsed_seconds,
+                len(pairs),
+            )
+            if result.status == "timeout":
+                report(
+                    f"Git history skipped after timeout: Odoo {version} -> {version + 1}",
+                    history_percent,
+                )
+    else:
+        report("Git history supervision unavailable; continuing with indexed evidence", 51)
+
+    dataset_started = perf_counter()
+    dataset = build_method_dataset(
+        indexes,
+        source,
+        target,
+        history_pairs=history_pairs,
+        progress=lambda message, percent: report(
+            message,
+            56 + round(max(0, min(100, percent)) / 100 * 5),
+        ),
+    )
+    logger.info(
+        "Migration Brain semantic dataset elapsed_seconds=%.3f samples=%d "
+        "positives=%d negatives=%d",
+        perf_counter() - dataset_started,
+        dataset.total,
+        dataset.positives,
+        dataset.negatives,
+    )
+    if dataset.positives == 0 or dataset.negatives == 0:
+        raise ValueError(
+            "Not enough semantic training examples were discovered in the selected Odoo sources."
+        )
+
+    report("Training semantic API ranker", 62)
+    ranker_started = perf_counter()
+    ranker = LogisticRanker()
+    ranker.fit(sample.ranked() for sample in dataset.train)
+    baseline_validation = ranker.evaluate(
+        (sample.ranked() for sample in dataset.validation),
+        threshold=0.50,
+    )
+    production_gate = _calibrate_decision_gate(ranker, dataset.validation)
+    logger.info(
+        "Migration Brain semantic ranker elapsed_seconds=%.3f train_samples=%d "
+        "validation_samples=%d precision=%.6f recall=%.6f false_auto_fix_rate=%.6f",
+        perf_counter() - ranker_started,
+        len(dataset.train),
+        len(dataset.validation),
+        production_gate["precision"],
+        production_gate["recall"],
+        production_gate["false_auto_fix_rate"],
+    )
+    training = {
+        "dataset": dataset.as_dict(),
+        "validation": baseline_validation.as_dict(),
+        "production_validation": {
+            key: round(value, 6) if isinstance(value, float) else value
+            for key, value in production_gate.items()
+        },
+        "enterprise_versions": [],
+        "method_threshold": float(production_gate["threshold"]),
+        "method_margin": float(production_gate["margin"]),
+        "metrics": {
+            "precision": production_gate["precision"],
+            "recall": production_gate["recall"],
+            "false_auto_fix_rate": production_gate["false_auto_fix_rate"],
+            "coverage": production_gate["coverage"],
+            "baseline_f1_at_0_5": baseline_validation.f1,
+        },
+        "split_strategy": dataset.split_strategy,
+        "history_supervision": {
+            "enabled": bool(history_pairs),
+            "rename_pairs": history_label_count,
+            "steps": {step: len(pairs) for step, pairs in sorted(history_pairs.items())},
+            "diagnostics": history_diagnostics,
+        },
+    }
+    return ranker, training
+
+
 class BrainTrainer:
     """Build a reusable migration model from official Odoo source once."""
 
@@ -273,6 +441,7 @@ class BrainTrainer:
         enterprise_roots: Mapping[int, str | Path] | None = None,
         history_repo: str | Path | None = None,
         progress: Callable[[str, int], None] | None = None,
+        checkpoint_path: str | Path | None = None,
     ) -> BrainTrainingResult:
         build_started = perf_counter()
         if target <= source:
@@ -288,6 +457,7 @@ class BrainTrainer:
         identities: dict[str, dict] = {}
         enterprise_versions: list[int] = []
         enterprise_source_roots: list[Path] = []
+        enterprise_fingerprints: dict[str, str] = {}
         count = target - source + 1
 
         resolved_direct_enterprise: dict[Path, list[int]] = {}
@@ -338,9 +508,13 @@ class BrainTrainer:
                             "folder for each Odoo version."
                         )
                 enterprise_indexing_started = perf_counter()
+                enterprise_fingerprint = (
+                    resolution.commit
+                    or SourceIndexer.project_fingerprint(resolution.source_root)
+                )
                 enterprise = self.indexer.index(
                     resolution.source_root,
-                    source_commit=resolution.commit,
+                    source_commit=enterprise_fingerprint,
                     source_mode="enterprise_local",
                     source_version=version,
                 )
@@ -356,6 +530,7 @@ class BrainTrainer:
                 community = compose_indexes(community, enterprise)
                 enterprise_versions.append(version)
                 enterprise_source_roots.append(resolution.source_root)
+                enterprise_fingerprints[str(version)] = enterprise_fingerprint
                 identities[str(version)].update({
                     "enterprise": True,
                     "enterprise_mode": resolution.mode,
@@ -365,111 +540,86 @@ class BrainTrainer:
                 })
             indexes[version] = community
 
-        report("Preparing semantic training dataset", 50)
-        history_root = Path(history_repo).expanduser().resolve() if history_repo else None
-        if history_root is None and enterprise_root is not None:
-            candidate = Path(enterprise_root).expanduser().resolve()
-            if (candidate / ".git").exists():
-                history_root = candidate
-
-        history_pairs: dict[str, set[tuple[str, str]]] = {}
-        history_diagnostics: dict[str, dict] = {}
-        history_label_count = 0
-        if history_root is not None and (history_root / ".git").exists():
-            versions = list(range(source, target))
-            for offset, version in enumerate(versions):
-                step = f"{version}_to_{version + 1}"
-                history_percent = 51 + round(offset / max(1, len(versions) - 1) * 4)
-                report(
-                    f"Mining Git history: Odoo {version} -> {version + 1}",
-                    history_percent,
-                )
-                result = mine_git_method_renames_with_status(
-                    history_root,
-                    version,
-                    version + 1,
-                    timeout_seconds=self.history_timeout_seconds,
-                )
-                pairs = {
-                    (item.source_method, item.target_method)
-                    for item in result.renames
-                }
-                history_pairs[step] = pairs
-                history_label_count += len(pairs)
-                history_diagnostics[step] = {
-                    "status": result.status,
-                    "elapsed_seconds": round(result.elapsed_seconds, 6),
-                    "rename_pairs": len(pairs),
-                    "detail": result.detail,
-                }
-                logger.info(
-                    "Migration Brain history mining step=%s status=%s "
-                    "elapsed_seconds=%.3f rename_pairs=%d",
-                    step,
-                    result.status,
-                    result.elapsed_seconds,
-                    len(pairs),
-                )
-                if result.status == "timeout":
-                    report(
-                        f"Git history skipped after timeout: Odoo {version} -> {version + 1}",
-                        history_percent,
-                    )
-        else:
-            report("Git history supervision unavailable; continuing with indexed evidence", 51)
-
-        dataset_started = perf_counter()
-        dataset = build_method_dataset(
-            indexes,
-            source,
-            target,
-            history_pairs=history_pairs,
-            progress=lambda message, percent: report(
-                message,
-                56 + round(max(0, min(100, percent)) / 100 * 5),
-            ),
+        checkpoint_file = (
+            Path(checkpoint_path).expanduser().resolve()
+            if checkpoint_path is not None
+            else None
         )
-        logger.info(
-            "Migration Brain semantic dataset elapsed_seconds=%.3f samples=%d "
-            "positives=%d negatives=%d",
-            perf_counter() - dataset_started,
-            dataset.total,
-            dataset.positives,
-            dataset.negatives,
-        )
-        if dataset.positives == 0 or dataset.negatives == 0:
-            raise ValueError(
-                "Not enough semantic training examples were discovered in the selected Odoo sources."
+        rule_identity = {
+            f"{version}_to_{version + 1}": [
+                {
+                    "rule_id": rule.rule_id,
+                    "automatic": rule.automatic,
+                    "classification": rule.classification.value,
+                    "evidence": rule.evidence,
+                }
+                for rule in self.registry.require(version, version + 1).rule_factory()
+            ]
+            for version in range(source, target)
+        }
+        input_identity = _checkpoint_identity({
+            "source": source,
+            "target": target,
+            "source_identities": identities,
+            "enterprise_fingerprints": enterprise_fingerprints,
+            "rules": rule_identity,
+        })
+        checkpoint = _load_training_checkpoint(checkpoint_file, input_identity)
+        if checkpoint is not None:
+            ranker = LogisticRanker.from_dict(checkpoint["ranker"])
+            training = dict(checkpoint["training"])
+            steps = {
+                str(key): dict(value)
+                for key, value in checkpoint.get("steps", {}).items()
+            }
+            report(
+                f"Resuming semantic training checkpoint with {len(steps)} completed step(s)",
+                64,
             )
+            logger.info(
+                "Resuming Migration Brain checkpoint path=%s completed_steps=%d",
+                checkpoint_file,
+                len(steps),
+            )
+        else:
+            history_root = Path(history_repo).expanduser().resolve() if history_repo else None
+            if history_root is None and enterprise_root is not None:
+                candidate = Path(enterprise_root).expanduser().resolve()
+                if (candidate / ".git").exists():
+                    history_root = candidate
+            ranker, training = _fit_semantic_ranker(
+                indexes,
+                source,
+                target,
+                history_root=history_root,
+                history_timeout_seconds=self.history_timeout_seconds,
+                report=report,
+            )
+            training["enterprise_versions"] = list(enterprise_versions)
+            steps = {}
+            _save_training_checkpoint(checkpoint_file, {
+                "schema_version": TRAINER_CHECKPOINT_SCHEMA_VERSION,
+                "input_identity": input_identity,
+                "ranker": ranker.as_dict(),
+                "training": training,
+                "steps": steps,
+            })
+            if checkpoint_file is not None:
+                report("Saved trained-ranker checkpoint", 64)
 
-        report("Training semantic API ranker", 62)
-        ranker_started = perf_counter()
-        ranker = LogisticRanker()
-        ranker.fit(sample.ranked() for sample in dataset.train)
-        baseline_validation = ranker.evaluate(
-            (sample.ranked() for sample in dataset.validation),
-            threshold=0.50,
-        )
-        production_gate = _calibrate_decision_gate(ranker, dataset.validation)
-        production_threshold = float(production_gate["threshold"])
-        production_margin = float(production_gate["margin"])
-        logger.info(
-            "Migration Brain semantic ranker elapsed_seconds=%.3f train_samples=%d "
-            "validation_samples=%d precision=%.6f recall=%.6f false_auto_fix_rate=%.6f",
-            perf_counter() - ranker_started,
-            len(dataset.train),
-            len(dataset.validation),
-            production_gate["precision"],
-            production_gate["recall"],
-            production_gate["false_auto_fix_rate"],
-        )
-
-        steps: dict[str, dict] = {}
-        method_count = model_count = dependency_count = field_count = 0
-        xml_id_count = js_module_count = asset_bundle_count = signature_adapter_count = 0
+        production_gate = training["production_validation"]
+        production_threshold = float(training["method_threshold"])
+        production_margin = float(training["method_margin"])
         for offset, version in enumerate(range(source, target)):
             learning_started = perf_counter()
             next_version = version + 1
+            key = f"{version}_to_{next_version}"
+            if key in steps:
+                report(
+                    f"Checkpoint restored Odoo {version} -> {next_version} API changes",
+                    70 + int(offset / max(1, target - source) * 22),
+                )
+                continue
             report(
                 f"Learning Odoo {version} -> {next_version} API changes",
                 70 + int(offset / max(1, target - source) * 22),
@@ -503,7 +653,6 @@ class BrainTrainer:
                 for rule in self.registry.require(version, next_version).rule_factory()
                 if rule.automatic
             ]
-            key = f"{version}_to_{next_version}"
             steps[key] = {
                 "source": version,
                 "target": next_version,
@@ -519,14 +668,6 @@ class BrainTrainer:
                 "transformations": rule_metadata,
                 "compatibility": step_knowledge(old, new, diff),
             }
-            method_count += len(methods)
-            model_count += len(models)
-            dependency_count += len(dependencies)
-            field_count += len(fields)
-            xml_id_count += len(xml_ids)
-            js_module_count += len(js_modules)
-            asset_bundle_count += len(asset_bundles)
-            signature_adapter_count += len(signatures)
             logger.info(
                 "Migration Brain API learning step=%s elapsed_seconds=%.3f "
                 "method_renames=%d model_renames=%d dependency_renames=%d "
@@ -543,35 +684,31 @@ class BrainTrainer:
                 len(asset_bundles),
                 len(signatures),
             )
+            _save_training_checkpoint(checkpoint_file, {
+                "schema_version": TRAINER_CHECKPOINT_SCHEMA_VERSION,
+                "input_identity": input_identity,
+                "ranker": ranker.as_dict(),
+                "training": training,
+                "steps": steps,
+            })
+            if checkpoint_file is not None:
+                report(
+                    f"Checkpoint saved after Odoo {version} -> {next_version}",
+                    71 + int(offset / max(1, target - source) * 22),
+                )
 
-        training = {
-            "dataset": dataset.as_dict(),
-            "validation": baseline_validation.as_dict(),
-            "production_validation": {
-                key: round(value, 6) if isinstance(value, float) else value
-                for key, value in production_gate.items()
-            },
-            "enterprise_versions": enterprise_versions,
-            "method_threshold": production_threshold,
-            "method_margin": production_margin,
-            "metrics": {
-                "precision": production_gate["precision"],
-                "recall": production_gate["recall"],
-                "false_auto_fix_rate": production_gate["false_auto_fix_rate"],
-                "coverage": production_gate["coverage"],
-                "baseline_f1_at_0_5": baseline_validation.f1,
-            },
-            "split_strategy": dataset.split_strategy,
-            "history_supervision": {
-                "enabled": bool(history_pairs),
-                "rename_pairs": history_label_count,
-                "steps": {
-                    step: len(pairs)
-                    for step, pairs in sorted(history_pairs.items())
-                },
-                "diagnostics": history_diagnostics,
-            },
-        }
+        method_count = sum(len(step.get("method_renames", ())) for step in steps.values())
+        model_count = sum(len(step.get("model_renames", ())) for step in steps.values())
+        dependency_count = sum(len(step.get("dependency_renames", ())) for step in steps.values())
+        field_count = sum(len(step.get("field_renames", ())) for step in steps.values())
+        xml_id_count = sum(len(step.get("xml_id_renames", ())) for step in steps.values())
+        js_module_count = sum(len(step.get("js_module_renames", ())) for step in steps.values())
+        asset_bundle_count = sum(
+            len(step.get("asset_bundle_renames", ())) for step in steps.values()
+        )
+        signature_adapter_count = sum(
+            len(step.get("signature_adapters", ())) for step in steps.values()
+        )
         payload = new_brain_payload(
             source=source,
             target=target,
@@ -603,13 +740,13 @@ class BrainTrainer:
             source,
             target,
             perf_counter() - build_started,
-            dataset.total,
+            int(training["dataset"]["total"]),
             destination,
         )
         return BrainTrainingResult(
             loaded,
             destination,
-            dataset.total,
+            int(training["dataset"]["total"]),
             training["production_validation"],
             method_count,
             model_count,

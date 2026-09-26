@@ -20,6 +20,7 @@ from odoo_migrator.brain.history import (
 )
 import odoo_migrator.brain.dataset as dataset_module
 import odoo_migrator.brain.history as history_module
+import odoo_migrator.brain.trainer as trainer_module
 from odoo_migrator.sources.registry import SourceSnapshot
 from odoo_migrator.sources.indexer import ModelInfo, ModuleInfo, OdooIndex, SourceIndexer
 
@@ -209,6 +210,64 @@ def test_brain_trainer_reports_dataset_progress_beyond_fifty_percent(tmp_path: P
     assert any(50 < percent < 62 for _, percent in dataset_updates)
     assert any("stable API samples" in stage for stage, _ in dataset_updates)
     assert any("exact semantic rename samples" in stage for stage, _ in dataset_updates)
+
+
+def test_brain_trainer_resumes_ranker_and_completed_steps_from_checkpoint(
+    tmp_path: Path,
+    monkeypatch,
+):
+    old = tmp_path / "odoo18"
+    new = tmp_path / "odoo19"
+    _addon(old, "demo_core", 18, model="demo.model")
+    _addon(new, "demo_core", 19, model="demo.model")
+    manager = _Manager({18: old, 19: new})
+    checkpoint = tmp_path / "training.checkpoint.json"
+    original_save = trainer_module._save_training_checkpoint
+    interrupted = False
+
+    def save_then_interrupt(path, payload):
+        nonlocal interrupted
+        original_save(path, payload)
+        if payload.get("steps") and not interrupted:
+            interrupted = True
+            raise RuntimeError("simulated Colab disconnect")
+
+    monkeypatch.setattr(trainer_module, "_save_training_checkpoint", save_then_interrupt)
+    with pytest.raises(RuntimeError, match="simulated Colab disconnect"):
+        BrainTrainer(source_manager=manager).build(
+            tmp_path / "interrupted.omb",
+            source=18,
+            target=19,
+            checkpoint_path=checkpoint,
+        )
+
+    saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert "18_to_19" in saved["steps"]
+    assert saved["training"]["dataset"]["total"] > 0
+
+    monkeypatch.setattr(trainer_module, "_save_training_checkpoint", original_save)
+    monkeypatch.setattr(
+        trainer_module,
+        "_fit_semantic_ranker",
+        lambda *args, **kwargs: pytest.fail("ranker training should be restored"),
+    )
+    monkeypatch.setattr(
+        trainer_module,
+        "compare_indexes",
+        lambda *args, **kwargs: pytest.fail("completed API step should be restored"),
+    )
+    progress = []
+    result = BrainTrainer(source_manager=manager).build(
+        tmp_path / "resumed.omb",
+        source=18,
+        target=19,
+        checkpoint_path=checkpoint,
+        progress=lambda stage, percent: progress.append((stage, percent)),
+    )
+
+    assert result.pack.supports(18, 19)
+    assert any("Resuming semantic training checkpoint" in stage for stage, _ in progress)
+    assert any("Checkpoint restored Odoo 18 -> 19" in stage for stage, _ in progress)
 
 
 def test_dataset_reports_every_adjacent_step_and_reuses_one_diff(monkeypatch):

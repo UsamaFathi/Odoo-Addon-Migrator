@@ -48,6 +48,7 @@ class EnterpriseOverlayTrainer:
         enterprise_roots: Mapping[int, str | Path] | None = None,
         history_repo: str | Path | None = None,
         progress: Callable[[str, int], None] | None = None,
+        checkpoint_path: str | Path | None = None,
     ) -> EnterpriseOverlayResult:
         base = (
             base_brain
@@ -95,6 +96,7 @@ class EnterpriseOverlayTrainer:
                 target=base.target,
                 enterprise_roots=resolved_roots,
                 history_repo=history_repo,
+                checkpoint_path=checkpoint_path,
                 progress=lambda message, percent: report(
                     f"Enterprise overlay: {message}",
                     10 + round(percent * 0.80),
