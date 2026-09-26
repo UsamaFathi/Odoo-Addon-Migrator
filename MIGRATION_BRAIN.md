@@ -153,24 +153,37 @@ centrally pinned Community snapshots from the official Odoo GitHub repository,
 validates separate Enterprise folders for 14.0 through 19.0, and runs the same
 `BrainTrainer` and `EnterpriseOverlayTrainer` used by the desktop and CLI.
 
-The recommended Drive layout is:
+Do not point Colab at the unpacked Drive folder for a full training run. The
+14-19 Enterprise set contains well over 100,000 small files, and copying them
+through Drive's mounted filesystem can take more than a day. Package the
+authorized trees locally first:
 
-```text
-My Drive/OdooEnterprise/
-    14.0/
-    15.0/
-    16.0/
-    17.0/
-    18.0/
-    19.0/
+```powershell
+python scripts/package_enterprise_for_colab.py `
+  --source D:\odoo\SourceCode\OdooEnterprise `
+  --output D:\odoo\OdooEnterpriseArchives
 ```
 
-If the Enterprise root is shared with the Google account, add a shortcut to
-My Drive so Colab's Drive mount can see it. The notebook optionally copies each
-tree to disposable `/content` storage for faster indexing; it never writes to
-the Drive source. It saves the Community Brain, base-bound Enterprise overlay,
-training summary, SHA-256 checksums, and timing log back to Drive. Reruns reuse
-valid existing packs unless explicitly disabled.
+Upload the six generated ZIP files to this recommended Drive layout:
+
+```text
+My Drive/OdooEnterpriseArchives/
+    odoo-enterprise-14.0.zip
+    odoo-enterprise-15.0.zip
+    odoo-enterprise-16.0.zip
+    odoo-enterprise-17.0.zip
+    odoo-enterprise-18.0.zip
+    odoo-enterprise-19.0.zip
+```
+
+The notebook copies each archive as one sequential transfer and safely extracts
+it on disposable `/content` storage before indexing. Transfers and extraction
+are checkpointed within the Colab session and report byte/file progress. The
+unpacked shared-folder shortcut remains a deliberately labelled slow fallback.
+Neither path writes to Enterprise source. The notebook saves the Community
+Brain, base-bound Enterprise overlay, training summary, SHA-256 checksums, and
+timing log back to Drive. Reruns reuse valid existing packs unless explicitly
+disabled.
 
 The notebook finishes with a 16-to-18 source-free smoke migration and verifies
 that the input fixture remains unchanged. The Enterprise overlay remains

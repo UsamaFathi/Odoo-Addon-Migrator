@@ -3,15 +3,17 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = ROOT / "notebooks" / "train_migration_brain_colab.ipynb"
 SCRIPT = ROOT / "scripts" / "train_brain_colab.py"
+PACKAGE_SCRIPT = ROOT / "scripts" / "package_enterprise_for_colab.py"
 
 
-def _load_script():
-    spec = importlib.util.spec_from_file_location("train_brain_colab", SCRIPT)
+def _load_script(path: Path = SCRIPT):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -46,6 +48,10 @@ def test_colab_notebook_is_valid_and_uses_reproducible_training_driver():
     assert "BrainTrainer" in sources
     assert "EnterpriseOverlayTrainer" in sources
     assert "STAGE_ENTERPRISE_LOCALLY" in sources
+    assert "USE_ENTERPRISE_ARCHIVES = True" in sources
+    assert "odoo-enterprise-{version}.0.zip" in sources
+    assert "Transfer {source.name}" in sources
+    assert "Unsafe archive member" in sources
     assert "source_code_indexed_at_runtime" in sources
     assert "local_authorized_use_only" in sources
 
@@ -87,3 +93,24 @@ def test_colab_notebook_does_not_embed_credentials_or_enterprise_source():
     assert "private_key" not in lowered
     assert "source_text" not in lowered
     assert "target_text" not in lowered
+
+
+def test_enterprise_archive_packaging_is_read_only_and_colab_friendly(tmp_path: Path):
+    module = _load_script(PACKAGE_SCRIPT)
+    enterprise = tmp_path / "enterprise"
+    source = _enterprise_tree(enterprise, 18)
+    cache = source / "sale_enterprise" / "__pycache__"
+    cache.mkdir()
+    (cache / "models.pyc").write_bytes(b"compiled")
+    marker = source / "sale_enterprise" / "models.py"
+    before = marker.read_bytes()
+
+    archive = module.package_version(enterprise, tmp_path / "archives", 18)
+
+    assert archive.name == "odoo-enterprise-18.0.zip"
+    assert marker.read_bytes() == before
+    with zipfile.ZipFile(archive) as bundle:
+        members = set(bundle.namelist())
+    assert "18.0/sale_enterprise/__manifest__.py" in members
+    assert "18.0/sale_enterprise/models.py" in members
+    assert not any("__pycache__" in member or member.endswith(".pyc") for member in members)
