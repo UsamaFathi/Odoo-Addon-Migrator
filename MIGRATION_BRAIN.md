@@ -185,6 +185,14 @@ Brain, base-bound Enterprise overlay, training summary, SHA-256 checksums, and
 timing log back to Drive. Reruns reuse valid existing packs unless explicitly
 disabled.
 
+Source indexes and semantic-training checkpoints are stored under
+`My Drive/OdooAddonMigratorBrain/training_cache`. The trained ranker is saved
+before API-change learning, and every completed adjacent API step is saved
+atomically. If a Colab runtime disconnects, rerunning the notebook validates
+the exact Community/Enterprise source identity and restores only compatible
+checkpoints; a changed source archive or migration rule set invalidates the
+checkpoint instead of silently mixing training runs.
+
 The notebook finishes with a 16-to-18 source-free smoke migration and verifies
 that the input fixture remains unchanged. The Enterprise overlay remains
 `local_authorized_use_only`: moving training to Colab does not change licensing

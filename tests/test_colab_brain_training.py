@@ -41,7 +41,7 @@ def test_colab_notebook_is_valid_and_uses_reproducible_training_driver():
 
     assert "drive.mount('/content/drive')" in sources
     assert "1yKOhhT2-Quhy_Va42a4-rUkdsoB7FtYt" in sources
-    assert "e32b5c7e746a97b7a038617e40ca6ffae25878ed" in sources
+    assert "2089afe9cec177781f839df1f73d827828acf8c4" in sources
     assert "userdata.get('GITHUB_TOKEN')" in sources
     assert "GIT_CONFIG_VALUE_0" in sources
     assert "x-access-token:{github_token}" in sources
@@ -52,6 +52,9 @@ def test_colab_notebook_is_valid_and_uses_reproducible_training_driver():
     assert "odoo-enterprise-{version}.0.zip" in sources
     assert "Transfer {source.name}" in sources
     assert "Unsafe archive member" in sources
+    assert "persistent_training / 'indexes'" in sources
+    assert "community.checkpoint.json" in sources
+    assert "enterprise.checkpoint.json" in sources
     assert "source_code_indexed_at_runtime" in sources
     assert "local_authorized_use_only" in sources
 
